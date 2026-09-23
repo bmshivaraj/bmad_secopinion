@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:18.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: secopinion
+      POSTGRES_PASSWORD: secopinion
+      POSTGRES_DB: secopinion
+    ports:
+      - "5432:5432"
+    volumes:
+      # Postgres 18+ images store data under a major-version-specific subdirectory
+      # of /var/lib/postgresql (not /var/lib/postgresql/data) -- see
+      # https://github.com/docker-library/postgres/pull/1259.
+      - db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U secopinion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://secopinion:secopinion@db:5432/secopinion
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run dev"
+
+volumes:
+  db-data:

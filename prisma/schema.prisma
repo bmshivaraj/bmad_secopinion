@@ -1,0 +1,34 @@
+// PostgreSQL 18.6 datasource, Prisma ORM v7 (driver-adapter client, connection configured in prisma.config.ts).
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Admin-extensible reference table (AD-15). Doctor.specialties (added in a later story)
+// will be a many-to-many join against this table.
+model Specialty {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("specialties")
+}
+
+// Single Admin-owned settings record (AD-16): Case fees + Platform Fee percentage.
+// A settings change applies prospectively only -- see AD-16.
+model PlatformSettings {
+  id                 String   @id @default(uuid())
+  standardCaseFee    Decimal  @map("standard_case_fee") @db.Decimal(10, 2)
+  urgentCaseFee      Decimal  @map("urgent_case_fee") @db.Decimal(10, 2)
+  platformFeePercent Decimal  @map("platform_fee_percent") @db.Decimal(5, 2)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_settings")
+}

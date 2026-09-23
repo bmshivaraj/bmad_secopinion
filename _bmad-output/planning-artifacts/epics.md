@@ -22,13 +22,15 @@ FR-4: Doctor Registration with Credential Submission — a prospective Doctor re
 FR-5: Manual Verification Review — the Admin reviews a Doctor's submitted credentials and sets Doctor Verification Status to Verified or Rejected.
 FR-6: Doctor UPI Payment Details — a Doctor provides (and can later update) a UPI ID as payout destination.
 FR-7: Problem Description and Document Upload — a Patient describes their condition and uploads at least one supporting Document to a Case.
-FR-8: Urgency Selection and Payment — a Patient selects Standard (₹1,000) or Urgent (₹2,000) and pays before the Case enters a Doctor's queue.
+FR-8: Urgency Selection and Payment — a Patient selects Standard or Urgent and pays (Admin-configured fee, defaulting to ₹1,000/₹2,000) before the Case enters a Doctor's queue.
 FR-9: Specialty-Filtered Case Queue — a Verified Doctor views a queue of Cases matching any of their declared Specialties; unassigned Cases are claimable; urgent Cases are prioritized/distinguished; SLA time-remaining is visible.
 FR-10: Request Additional Documents — a Doctor requests specific additional Documents without closing the Case; Case Status moves to More Info Requested and the SLA clock pauses.
 FR-11: Submit Opinion and Close Case — a Doctor submits a written Opinion, closing the Case and triggering Doctor Payout calculation.
 FR-12: Doctor Payout on Case Closure — the system calculates and disburses (via daily batch) the Doctor's Payout share to their UPI ID, deducting the Platform Fee first.
 FR-13: Admin-Approved Refund on Response SLA Breach — if no Opinion is submitted within the 5-day/120h SLA, the Case moves to Refund Pending and the Admin manually approves or rejects the refund.
 FR-14: Baseline Access Control for Medical Documents — a Document is viewable only by that Case's Patient and currently assigned Doctor (or Admin).
+FR-15: Specialty Catalog Management — the Admin can add new Specialties to the fixed, admin-extensible catalog (seeded with 15 defaults) that Doctors declare and Cases match against.
+FR-16: Case Fee & Platform Fee Percentage Configuration — the Admin configures Standard/Urgent Case fee amounts and the Platform Fee percentage (defaults ₹1,000/₹2,000/20%), platform-wide (not per-doctor in v1).
 
 ### NonFunctional Requirements
 
@@ -54,6 +56,8 @@ NFR-7: Terms of Service must include a liability disclaimer clarifying an Opinio
 - Doctor Payout runs as a daily batch job (not synchronous with Opinion submission) via `PaymentProvider.payout()` (AD-10).
 - Response SLA clock uses explicit pause/resume timestamp-pairs on `Case` (`{ pausedAt, resumedAt }`); elapsed time is computed by exactly one exported function `computeElapsedSlaTime(case)` in the Cases module, called by any other module needing it (AD-11).
 - `Doctor.specialties` is a collection (not a single scalar); a Case is visible to a Doctor if its specialty matches any of the Doctor's declared Specialties (AD-12).
+- `Specialty` is a DB-backed, admin-extensible reference table (fixed enum, not free text), seeded with 15 default Specialties at initial migration; Admin can add more later, no delete/deactivate in v1 (AD-15).
+- Standard/Urgent Case fee amounts and the Platform Fee percentage are a single Admin-owned settings record, not hardcoded constants, defaulting to ₹1,000/₹2,000/20%; changes apply prospectively only, platform-wide not per-doctor in v1 (AD-16).
 - A single closed `CaseStatus` enum and its legal transition graph is defined once in the Cases module (`domain/case-state-machine.ts`) and imported everywhere else (AD-13): `Submitted → UnderReview → MoreInfoRequested ⇄ UnderReview → OpinionGiven → Closed`, or `UnderReview`/`MoreInfoRequested → RefundPending → Refunded → Closed` or back to `UnderReview` (admin-rejected, fresh SLA window).
 - Document access control is enforced only at the Cases module's service boundary (never in `StorageProvider`, never re-implemented in a route handler) (AD-14).
 - Consistency conventions (AD-9): `camelCase` vars/functions, `PascalCase` types/classes, `kebab-case` files; Postgres `snake_case` tables/columns; API response envelope `{ data, error }`; domain errors typed per module, mapped to HTTP only at route-handler boundary; JWT carries `userId` + `role` (`patient`/`doctor`/`admin`).
@@ -81,6 +85,8 @@ FR-11: Epic 4 — Submit Opinion, close Case
 FR-12: Epic 5 — Doctor Payout batch on closure
 FR-13: Epic 5 — SLA-breach Refund Pending + Admin resolution
 FR-14: Epic 3 (initial) + Epic 4 (doctor-side) — Document access control
+FR-15: Epic 2 — Admin Specialty catalog management
+FR-16: Epic 5 — Admin Case fee & Platform Fee percentage configuration
 
 ## Epic List
 
@@ -90,7 +96,7 @@ A Patient (or guardian, for a minor) can register with mobile+OTP, set a passwor
 
 ### Epic 2: Doctor Onboarding & Verification
 A prospective Doctor can register with credentials + declared Specialties + UPI payout ID, and the Admin can manually review and set Verification Status. Standalone: complete Doctor onboarding, independent of Patient flows.
-**FRs covered:** FR-4, FR-5, FR-6
+**FRs covered:** FR-4, FR-5, FR-6, FR-15
 
 ### Epic 3: Case Submission & Payment
 A logged-in Patient describes their condition, uploads Documents (access-controlled per AD-14), optionally picks a Verified Doctor (read-only use of Epic 2's Doctors module), selects Standard/Urgent, and pays before the Case becomes visible to any Doctor. Standalone: a complete, payable Case exists at the end, even with no Doctor workflow yet.
@@ -102,7 +108,7 @@ A Verified Doctor sees their Specialty-filtered, SLA-aware queue, can self-claim
 
 ### Epic 5: Payouts & SLA Refund Resolution
 Doctors are paid their share via the daily payout batch after closing a Case; Cases that breach the 5-day/120h SLA move to Refund Pending for the Admin to approve/reject, completing the money lifecycle for every Case. Standalone: closes the loop started in Epics 3 and 4.
-**FRs covered:** FR-12, FR-13
+**FRs covered:** FR-12, FR-13, FR-16
 
 Implementation note: Epic 1 Story 1 will include the foundational project scaffold (Next.js app, module skeleton, Prisma schema init, Docker Compose) since no starter template exists.
 
@@ -128,6 +134,11 @@ So that subsequent stories have a working foundation (modules, DB, dev server) t
 **When** a developer inspects `src/shared/`
 **Then** an `OtpProvider` interface exists with a `MockOtpProvider` implementation (fixed/logged OTP, no real SMS) per AD-7
 **And** the API response envelope convention (`{ data, error }`) and JWT auth-context shape (`userId` + `role`) from AD-9 are documented/stubbed for later modules to follow
+
+**Given** the initial database migration runs
+**When** it completes
+**Then** the `Specialty` reference table is seeded with 15 default rows (Orthopedics, Cardiology, Oncology, Neurology, Neurosurgery, Gastroenterology, Nephrology, Urology, Pulmonology, Gynecology & Obstetrics, ENT, Ophthalmology, General Surgery, Endocrinology, Dermatology) per AD-15
+**And** a single `PlatformSettings` record is seeded with default values (Standard fee ₹1,000, Urgent fee ₹2,000, Platform Fee 20%) per AD-16
 
 ### Story 1.2: Mobile + OTP Registration
 
@@ -210,7 +221,7 @@ So that I can be considered for verification and start reviewing Cases in my fie
 **Given** a mobile number verified via OTP (reusing the Story 1.2 mechanism)
 **When** the Doctor completes registration
 **Then** the system requires at least one credential Document (certificate/Doctor ID, image or PDF) uploaded via `StorageProvider`'s `LocalDiskStorageProvider` `[FR-4, AD-7]`
-**And** requires at least one declared Specialty, stored as a collection on `Doctor.specialties` (not a single scalar) `[FR-4, AD-12]`
+**And** requires at least one declared Specialty, selected from the seeded Specialty catalog (fixed enum, not free text) and stored as a collection on `Doctor.specialties` (not a single scalar) `[FR-4, AD-12, AD-15]`
 
 **Given** a Doctor registration missing a credential Document or a declared Specialty
 **When** submission is attempted
@@ -260,6 +271,26 @@ So that only credentialed Doctors can access and review Cases.
 **Given** the Admin views a Doctor's credential Document
 **When** access control is enforced
 **Then** only the Admin (and the Doctor themself) can view that Document — consistent with the baseline access-control principle later formalized in FR-14
+
+### Story 2.4: Admin Manages Specialty Catalog
+
+As the Admin,
+I want to add new Specialties to the catalog,
+So that Doctor registration and Case matching can expand beyond the 15 defaults without a code deploy.
+
+**Acceptance Criteria:**
+
+**Given** an authenticated Admin session
+**When** the Admin views the Specialty catalog
+**Then** it lists all current active Specialties, including the 15 seeded at launch (Story 1.1) and any added since `[FR-15, AD-15]`
+
+**Given** the Admin submits a new Specialty name
+**When** it is added
+**Then** it becomes immediately available for new Doctor registrations (Story 2.1) and Case specialty selection (Epic 3/4) — existing Doctor/Case records are unaffected
+
+**Given** the Specialty catalog
+**When** the Admin attempts to remove or deactivate an existing Specialty
+**Then** the system does not support this in v1 — the Admin can only add
 
 ## Epic 3: Case Submission & Payment
 
@@ -316,11 +347,11 @@ So that my Case is submitted and becomes visible to Doctors for review.
 
 **Given** a Case being drafted with a description and at least one Document (Story 3.1)
 **When** the Patient selects an Urgency Tier
-**Then** the choice is either `Standard` (₹1,000) or `Urgent` (₹2,000), fixed for the life of the Case — no mid-case escalation `[FR-8]`
+**Then** the choice is either `Standard` or `Urgent`, fixed for the life of the Case — no mid-case escalation `[FR-8]`
 
 **Given** an Urgency Tier is selected
 **When** the Patient completes payment via `PaymentProvider` (`MockPaymentProvider` in v1)
-**Then** the full fee is captured, stored in a currency-safe representation (no float arithmetic) `[FR-8, NFR-4, AD-3]`
+**Then** the fee charged is read from the current `PlatformSettings` record (seeded in Story 1.1, defaulting to ₹1,000 Standard / ₹2,000 Urgent — see Story 5.5 for how the Admin changes it) and captured in a currency-safe representation (no float arithmetic) `[FR-8, NFR-4, AD-3, AD-16]`
 **And** Case Status transitions to `Submitted` per the AD-13 state machine, becoming visible to matching Doctors (Epic 4)
 
 **Given** a payment attempt fails
@@ -458,7 +489,7 @@ So that Patients are fairly refunded when no Doctor was available in time, while
 
 **Given** a Case in `Refund Pending`
 **When** the Admin approves the refund
-**Then** Case Status moves to `Refunded` then `Closed` per AD-13, the full amount (₹1,000 or ₹2,000) is returned to the Patient's original payment method via `PaymentProvider`, no Doctor Payout is calculated, and the Patient is notified `[FR-13]`
+**Then** Case Status moves to `Refunded` then `Closed` per AD-13, the full amount charged at that Case's submission (the fee in effect at the time, per `PlatformSettings`) is returned to the Patient's original payment method via `PaymentProvider`, no Doctor Payout is calculated, and the Patient is notified `[FR-13]`
 
 **Given** a Case in `Refund Pending`
 **When** the Admin rejects the refund (after out-of-band phone contact with the Patient) and the Patient chooses to keep waiting
@@ -478,7 +509,7 @@ So that I'm compensated for my review work.
 
 **Given** one or more Cases closed with an Opinion (`Opinion Given`/`Closed`) since the last payout batch run
 **When** the daily payout job runs
-**Then** it calculates each Doctor's Payout share (Case fee minus the configurable Platform Fee percentage, currency-safe arithmetic) and disburses it via `PaymentProvider.payout()` to the Doctor's registered UPI ID `[FR-12, AD-10, NFR-4]`
+**Then** it calculates each Doctor's Payout share (Case fee minus the Platform Fee percentage in effect at Case closure, read from `PlatformSettings`, defaulting to 20%, currency-safe arithmetic) and disburses it via `PaymentProvider.payout()` to the Doctor's registered UPI ID `[FR-12, AD-10, AD-16, NFR-4]`
 
 **Given** a Case closed with an Opinion but not yet processed by the payout batch
 **When** the Doctor views their payout log
@@ -503,3 +534,23 @@ So that a missed refund or an unpaid doctor is never a silent failure.
 **Given** either daily batch job throws an unhandled error or fails to complete
 **When** the failure occurs
 **Then** an alert is raised so the Admin/operator is notified — this is the minimum v1 operational floor, not the full observability stack (which remains deferred)
+
+### Story 5.5: Admin Configures Case Fees & Platform Fee Percentage
+
+As the Admin,
+I want to set the Standard/Urgent Case fee amounts and the Platform Fee percentage,
+So that pricing can be tuned over time without a code deploy.
+
+**Acceptance Criteria:**
+
+**Given** an authenticated Admin session
+**When** the Admin views platform pricing settings
+**Then** it shows the current `PlatformSettings` values (Standard fee, Urgent fee, Platform Fee percentage), defaulting to ₹1,000/₹2,000/20% as seeded in Story 1.1 `[FR-16, AD-16]`
+
+**Given** the Admin updates any of these values
+**When** the update is saved
+**Then** it applies prospectively only — Cases already submitted (Story 3.3) keep the fee charged at their own submission time, and Payouts already calculated (Story 5.3) keep their original split percentage `[FR-16, AD-16]`
+
+**Given** v1 pricing scope
+**When** the Admin sets these values
+**Then** they apply platform-wide to every Case — there is no per-doctor pricing in v1 (deferred to v2, informed by doctor expertise/rating)

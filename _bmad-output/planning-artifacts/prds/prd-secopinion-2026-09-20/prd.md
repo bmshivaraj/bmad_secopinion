@@ -2,7 +2,7 @@
 title: SecOpinion
 status: final
 created: 2026-09-20
-updated: 2026-09-22
+updated: 2026-09-23
 ---
 
 # PRD: SecOpinion
@@ -68,13 +68,13 @@ This is not a seasonal or trend-driven need — it is evergreen, rooted in a las
 - **Patient** — The individual whose medical case is being reviewed. In v1, the Patient and the Registrant (§2.3, UJ-2) are the same account; no separate proxy/caregiver identity exists.
 - **Registrant** — The person who creates the account and completes OTP verification. Equivalent to Patient in v1 (see above). For a Patient under 18, the Registrant uses a parent/guardian's mobile number.
 - **Doctor** — A registered, credential-submitted medical professional who reviews Cases within their declared Specialty and issues Opinions.
-- **Specialty** — A medical domain (e.g., Orthopedics, Cardiology, Oncology) a Doctor declares at registration; determines which Cases appear in their queue. A Doctor may declare more than one Specialty `[RESOLVED during Architecture: AD-12, architecture-secopinion-2026-09-22 — Doctor.specialties is a collection, not a single scalar; a Case matches a Doctor if the Case's specialty is in any of the Doctor's declared Specialties]`. `[OPEN QUESTION: fixed enum list vs. free text — see §8.]`
+- **Specialty** — A medical domain (e.g., Orthopedics, Cardiology, Oncology) a Doctor declares at registration; determines which Cases appear in their queue. A Doctor may declare more than one Specialty `[RESOLVED during Architecture: AD-12, architecture-secopinion-2026-09-22 — Doctor.specialties is a collection, not a single scalar; a Case matches a Doctor if the Case's specialty is in any of the Doctor's declared Specialties]`. `[RESOLVED: fixed enum, admin-extensible — see AD-15, architecture-secopinion-2026-09-22. Seeded with 15 default Specialties at launch; the Admin can add further Specialties over time (FR-15) without a code deploy.]`
 - **Case** — A single second-opinion request: one Patient's problem description, uploaded Documents, an Urgency Tier, and payment, tracked through a Case Status lifecycle to a closed Opinion.
 - **Document** — A file (image or PDF) uploaded against a Case — X-ray, MRI, blood report, discharge summary, or similar.
-- **Urgency Tier** — **Standard** (₹1,000) or **Urgent** (₹2,000); set once at Case submission and fixed for the life of the Case in v1 — determines queue priority and target turnaround. `[DECISION: mid-case escalation from Standard to Urgent is explicitly deferred to v2, not built in v1.]`
+- **Urgency Tier** — **Standard** or **Urgent**; set once at Case submission and fixed for the life of the Case in v1 — determines queue priority and target turnaround. Fee amounts are Admin-configurable (FR-16), defaulting to ₹1,000 (Standard) / ₹2,000 (Urgent) at launch — platform-wide, not per-doctor in v1. `[DECISION: mid-case escalation from Standard to Urgent is explicitly deferred to v2, not built in v1.]`
 - **Case Status** — The Case's lifecycle state: `Submitted` → `Under Review` → `More Info Requested` (may cycle back to `Under Review`) → `Opinion Given` / `Closed`, **or** `Under Review`/`More Info Requested` → `Refund Pending` (on Response SLA breach) → `Refunded` (Admin-approved) or back to `Under Review` (Admin-rejected).
 - **Opinion** — The Doctor's written second-opinion output that closes a Case.
-- **Platform Fee** — The portion of the Case fee (₹1,000/₹2,000) retained by SecOpinion; the remainder is the Doctor Payout. `[OPEN QUESTION: exact split % — see §8.]`
+- **Platform Fee** — The portion of the Case fee retained by SecOpinion; the remainder is the Doctor Payout. The split percentage is Admin-configurable (FR-16), defaulting to 20% platform / 80% doctor at launch — platform-wide, not per-doctor in v1 (per-doctor pricing by doctor expertise/rating is a v2 item).
 - **Doctor Payout** — The portion of the Case fee paid directly to the reviewing Doctor's registered UPI ID after the platform's cut is deducted.
 - **Doctor Verification Status** — `Pending` / `Verified` / `Rejected`, set by the single Admin after manually reviewing the submitted credential Document (certificate or Doctor ID) — see FR-5.
 - **Admin** — The single application-owner/operator role (founder or designated staff) who manually reviews Doctor credential submissions (FR-5) and manually approves or rejects SLA-breach refunds (FR-13). `[ASSUMPTION: one Admin, no multi-admin roles or RBAC in v1 — revisit if verification/refund volume requires a team.]`
@@ -127,6 +127,7 @@ A prospective Doctor can register with mobile+OTP (same mechanism as FR-1) and u
 **Consequences (testable):**
 - A Doctor account's Doctor Verification Status starts as `Pending` and the Doctor cannot access the case queue (FR-9) until moved to `Verified`.
 - Doctor registration requires at least one credential Document and one or more declared Specialties before submission is accepted.
+- Declared Specialties are selected from the current active Specialty catalog (fixed enum, admin-extensible — see FR-15); free-text specialty entry is not supported.
 
 #### FR-5: Manual Verification Review
 
@@ -164,12 +165,13 @@ A Patient can describe their condition and the treatment/surgery recommendation 
 
 #### FR-8: Urgency Selection and Payment
 
-A Patient selects Standard (₹1,000) or Urgent (₹2,000) and completes payment — into the Platform Admin Account — before the Case enters a Doctor's queue.
+A Patient selects Standard or Urgent and completes payment — into the Platform Admin Account — before the Case enters a Doctor's queue. Fee amounts are Admin-configured (FR-16), defaulting to ₹1,000 (Standard) / ₹2,000 (Urgent) at launch.
 
 **Consequences (testable):**
 - Case Status remains `Draft`/unsubmitted until payment succeeds; a failed payment does not create a visible Case for Doctors.
 - The Urgency Tier chosen at submission is fixed for the life of the Case in v1 — no mid-case Standard→Urgent escalation (deferred to v2; see Glossary, §6.2).
-- The full fee (₹1,000/₹2,000) is captured into the Platform Admin Account at submission; the Doctor Payout split (FR-12) is calculated and disbursed only on Case closure (FR-11) or refunded in full on SLA breach (FR-13) — the platform never holds a doctor's share separately mid-Case.
+- The full fee (at whatever amount the Admin has configured for that tier at the moment of submission) is captured into the Platform Admin Account at submission; the Doctor Payout split (FR-12) is calculated and disbursed only on Case closure (FR-11) or refunded in full on SLA breach (FR-13) — the platform never holds a doctor's share separately mid-Case.
+- A change to the Admin-configured fee amounts applies prospectively only — a Case already submitted keeps the fee it was charged at submission time.
 
 **Feature-specific NFRs:**
 - Payment processing goes through a third-party UPI/payment gateway (offloading PCI-DSS card-data scope to that provider); SecOpinion does not store raw card data. `[Cross-reference: Compliance and Regulatory, §4.6 — v1 is POC-scoped; see risk flag there.]`
@@ -217,9 +219,10 @@ A Doctor can submit a written Opinion, which closes the Case and makes the Opini
 When a Doctor closes a Case with an Opinion within the Response SLA (FR-11), the system calculates the Doctor's Payout share of the Case fee and disburses it directly to the Doctor's registered UPI ID (FR-6), deducting the Platform Fee first into the Platform Admin Account.
 
 **Consequences (testable):**
-- Payout split is a configurable percentage, not hardcoded, since the exact split (a founder-chosen value in the 20-30% platform / 70-80% doctor range) is not yet finalized. `[OPEN QUESTION: exact % split — see §8.]`
+- The Platform Fee percentage is Admin-configured (FR-16), defaulting to 20% platform / 80% doctor at launch — platform-wide, not per-doctor in v1 (per-doctor pricing by doctor expertise/rating is a v2 item).
+- A change to the Admin-configured split percentage applies prospectively only — a Payout already calculated keeps the split percentage that was in effect at Case closure.
 - Doctors can view a running log of Payouts owed/disbursed, and the UPI ID each was sent to.
-- `[OPEN QUESTION: payout timing — immediately on Case closure, or batched (e.g. daily/weekly)? See §8 — an Architecture-stage decision informed by payment-gateway/UPI payout API capabilities.]`
+- `[RESOLVED during Architecture: AD-10 — payout is batched via a daily job, not synchronous with Case closure.]`
 
 **Feature-specific NFRs:**
 - All payment and payout amounts are stored in a currency-safe representation (no floating-point money arithmetic).
@@ -253,6 +256,30 @@ A Document uploaded against a Case is only viewable by that Case's Patient and t
 - No formal HIPAA/DPDP Act/GDPR compliance program, data residency commitment, or retention policy is defined for v1 — deferred to a post-POC phase. `[NOTE FOR PM: this is an accepted founder decision, not an oversight — but it should be revisited the moment real (non-test) patient and doctor data starts flowing through the system at any meaningful volume.]`
 - Terms of Service must still include a liability disclaimer clarifying that a SecOpinion Opinion is advisory and does not replace the treating physician's care — this is a legal-exposure basic, not a compliance-program item, and is kept in scope even for the POC.
 - Payment processing is delegated to a third-party UPI/payment gateway, which carries its own PCI-DSS obligations; SecOpinion itself does not store card data (see FR-8).
+
+### 4.7 Admin Platform Configuration
+
+**Description:** The Admin manages two platform-wide configuration surfaces that were open questions at initial PRD drafting: the Specialty catalog Doctors register against, and the pricing (Case fees, Platform Fee split) applied to every Case. Both are runtime-configurable, not hardcoded, so they can change without a code deploy.
+
+**Functional Requirements:**
+
+#### FR-15: Specialty Catalog Management
+
+The Admin can add new Specialties to the fixed Specialty catalog that Doctors declare against (FR-4) and Cases match against (FR-9).
+
+**Consequences (testable):**
+- The Specialty catalog is a fixed enum backed by an admin-extensible reference table (not free text), seeded with 15 default Specialties at launch: Orthopedics, Cardiology, Oncology, Neurology, Neurosurgery, Gastroenterology, Nephrology, Urology, Pulmonology, Gynecology & Obstetrics, ENT (Otolaryngology), Ophthalmology, General Surgery, Endocrinology, Dermatology.
+- New Specialties added by the Admin become immediately available for new Doctor registrations and Case specialty selection; existing Doctor/Case records are unaffected.
+- Removing/deactivating a Specialty is out of scope for v1 — the Admin can only add.
+
+#### FR-16: Case Fee & Platform Fee Percentage Configuration
+
+The Admin can configure the Standard and Urgent Case fee amounts, and the Platform Fee percentage taken from every Case fee.
+
+**Consequences (testable):**
+- Defaults at launch: Standard fee ₹1,000, Urgent fee ₹2,000, Platform Fee 20% (Doctor Payout 80%).
+- v1 pricing is platform-wide only — the same fee/split applies to every Case regardless of which Doctor reviews it. Per-doctor pricing (e.g., by doctor expertise/rating) is explicitly deferred to v2.
+- Changing any of these values applies prospectively only: Cases already submitted keep the fee charged at their own submission time; Payouts already calculated keep their original split percentage — no retroactive recalculation.
 
 ## 5. Non-Goals (Explicit)
 
@@ -301,17 +328,17 @@ A Document uploaded against a Case is only viewable by that Case's Patient and t
 
 ## 8. Open Questions
 
-1. Doctor specialty model: fixed enum list vs. free text? (§3 Glossary, FR-9) `[Cardinality sub-question — single specialty per doctor or multiple — resolved during Architecture: AD-12, multiple specialties per doctor.]`
-2. Is OTP-fallback login supported alongside username/password, or username/password only in v1? (FR-2)
-3. Is zero-document Case submission ever allowed, or is at least one Document always required? (FR-7)
-4. Supported Document formats — is DICOM (native medical imaging format) needed in v1, or is JPEG/PNG/PDF sufficient? (FR-7)
-5. Exact Platform Fee / Doctor Payout split percentage within the confirmed 20-30% platform range. (FR-12)
-6. Payout timing/mechanism — instant UPI transfer on closure, or batched (daily/weekly)? (FR-12)
-7. Is there any post-closure clarification channel between Patient and Doctor, or is the written Opinion final once the Case is closed? (FR-11)
+1. Is OTP-fallback login supported alongside username/password, or username/password only in v1? (FR-2)
+2. Is zero-document Case submission ever allowed, or is at least one Document always required? (FR-7)
+3. Supported Document formats — is DICOM (native medical imaging format) needed in v1, or is JPEG/PNG/PDF sufficient? (FR-7)
+4. Payout timing/mechanism — instant UPI transfer on closure, or batched (daily/weekly)? (FR-12)
+5. Is there any post-closure clarification channel between Patient and Doctor, or is the written Opinion final once the Case is closed? (FR-11)
 
 **Resolved or deferred during Finalize (kept for traceability, no longer open):**
 - ~~Should a Success Metric explicitly track doctor-verification integrity?~~ Deferred to v2 — not a v1 Success Metric.
 - ~~Should a Doctor be able to submit a late Opinion for the record even after the Case has auto-refunded?~~ Resolved — refunds now go through an Admin-approved `Refund Pending` step (FR-13) instead of firing automatically, which locks the Case to further Doctor/Patient action until the Admin approves or rejects, removing the race condition entirely.
+- ~~Doctor specialty model: fixed enum list vs. free text?~~ Resolved — fixed enum, admin-extensible reference table (AD-15), seeded with 15 default Specialties; Admin can add more via FR-15. Cardinality (single vs. multiple per Doctor) was separately resolved during Architecture as AD-12.
+- ~~Exact Platform Fee / Doctor Payout split percentage within the 20-30% platform range?~~ Resolved — made Admin-configurable (FR-16) rather than a fixed founder-chosen constant, defaulting to 20% platform / 80% doctor at launch; per-doctor pricing deferred to v2.
 
 ## 9. Assumptions Index
 
@@ -330,4 +357,6 @@ A Document uploaded against a Case is only viewable by that Case's Patient and t
 - §4.5 FR-13: On refund rejection, the Admin contacts the Patient by phone (manual, no in-app mechanism in v1) to decide close-vs-continue; continuing grants a fresh 5-day/120h SLA window with no cap on how many cycles can repeat.
 - §7: Doctor-verification-integrity tracking (raised during brief.md reconciliation) is explicitly deferred to v2, not a v1 Success Metric.
 - §4.6: V1 is explicitly POC-scoped — no formal encryption-at-rest, data-residency, or regulatory-compliance program; founder-accepted risk, flagged for revisit before wider rollout (see §4.6 risk note).
+- §4.7 FR-15: Default Specialty catalog is 15 specialties chosen to cover common second-opinion-relevant domains (surgical/major-treatment fields); mental health/psychiatry intentionally excluded per §2.2 non-goals.
+- §4.7 FR-16: Default Platform Fee is 20% (Doctor Payout 80%), and default Case fees remain ₹1,000 Standard / ₹2,000 Urgent — all three admin-editable from day one, not hardcoded constants.
 - §6.2: v1 is assumed to be a responsive web app, not native mobile apps.

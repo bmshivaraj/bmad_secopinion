@@ -30,7 +30,7 @@ Healthcare has a structural conflict of interest: some multi-specialty hospitals
 
 - **CAP-4**
   - **intent:** A prospective Doctor can register with mobile + OTP, upload credential Document(s), declare one or more Specialties, and provide a UPI payout method.
-  - **success:** Registration is rejected without at least one credential Document and at least one declared Specialty; Doctor Verification Status starts `Pending`.
+  - **success:** Registration is rejected without at least one credential Document and at least one declared Specialty; Doctor Verification Status starts `Pending`; declared Specialties are selected from the fixed, Admin-extensible Specialty catalog (CAP-15), not free text.
 
 - **CAP-5**
   - **intent:** The single Admin can manually review a Doctor's submitted credentials and set Doctor Verification Status to `Verified` or `Rejected`.
@@ -45,11 +45,11 @@ Healthcare has a structural conflict of interest: some multi-specialty hospitals
   - **success:** At least one Document is required before a Case can proceed to payment; read access to uploaded Documents is enforced at the Cases module's service boundary, never inside generic storage (CAP-14).
 
 - **CAP-8**
-  - **intent:** A Patient selects Standard (₹1,000) or Urgent (₹2,000) urgency and pays before the Case enters a Doctor's queue.
-  - **success:** The Case remains unsubmitted/invisible to Doctors until payment succeeds; payment goes through a `PaymentProvider` (mocked in v1, real UPI gateway in v2). The Urgency Tier is fixed for the Case's life — no mid-case escalation (v2 item).
+  - **intent:** A Patient selects Standard or Urgent urgency and pays before the Case enters a Doctor's queue, at Admin-configured fee amounts (CAP-16, defaulting to ₹1,000/₹2,000 at launch).
+  - **success:** The Case remains unsubmitted/invisible to Doctors until payment succeeds; payment goes through a `PaymentProvider` (mocked in v1, real UPI gateway in v2). The Urgency Tier is fixed for the Case's life — no mid-case escalation (v2 item). A fee change by the Admin applies prospectively only.
 
 - **CAP-9**
-  - **intent:** A Verified Doctor views a queue of Cases matching any of their declared Specialties, with unassigned Cases claimable and urgent Cases prioritized/distinguished.
+  - **intent:** A Verified Doctor views a queue of Cases matching any of their declared Specialties (drawn from the fixed catalog, CAP-15), with unassigned Cases claimable and urgent Cases prioritized/distinguished.
   - **success:** A Doctor cannot see Cases outside their declared Specialties; a claim is atomic (optimistic locking) so two Doctors cannot claim the same Case; each Case shows time remaining against the Response SLA.
 
 - **CAP-10**
@@ -61,8 +61,8 @@ Healthcare has a structural conflict of interest: some multi-specialty hospitals
   - **success:** A closed Case cannot be reopened by the Doctor (a post-closure clarification channel is an open question); submitting an Opinion while `Under Review` or `More Info Requested` triggers Doctor Payout calculation (CAP-12); a Case in `Refund Pending` blocks Opinion submission entirely.
 
 - **CAP-12**
-  - **intent:** A Doctor is paid their Payout share of the Case fee (Platform Fee deducted first) after closing a Case with an Opinion within the Response SLA.
-  - **success:** Payout is batched via a daily job, not synchronous with Case closure; disbursed via `PaymentProvider` to the Doctor's registered UPI ID; amounts are stored in a currency-safe representation. Exact platform/doctor split percentage is an open question (20-30% platform range confirmed, exact value not yet set).
+  - **intent:** A Doctor is paid their Payout share of the Case fee (Platform Fee deducted first) after closing a Case with an Opinion within the Response SLA, at the Admin-configured split (CAP-16, defaulting to 20% platform / 80% doctor at launch).
+  - **success:** Payout is batched via a daily job, not synchronous with Case closure; disbursed via `PaymentProvider` to the Doctor's registered UPI ID; amounts are stored in a currency-safe representation. A split-percentage change by the Admin applies prospectively only — Payouts already calculated keep their original percentage.
 
 - **CAP-13**
   - **intent:** If no Doctor submits an Opinion within the 5-day/120h Response SLA, the Case moves to `Refund Pending` and the Admin is notified to manually approve or reject a refund.
@@ -71,6 +71,14 @@ Healthcare has a structural conflict of interest: some multi-specialty hospitals
 - **CAP-14**
   - **intent:** A Document uploaded against a Case is viewable only by that Case's Patient and its currently assigned Doctor (or Admin).
   - **success:** Access control is enforced at the Cases module's service boundary — never inside the generic storage layer or a route handler. Standard HTTPS/TLS in transit; no encryption-at-rest or formal compliance program in v1 (explicit, PM-flagged risk).
+
+- **CAP-15**
+  - **intent:** The Admin can add new Specialties to the fixed Specialty catalog that Doctors declare against (CAP-4) and Cases match against (CAP-9).
+  - **success:** The catalog is seeded with 15 default Specialties at launch; the Admin can add more without a code deploy; removing/deactivating a Specialty is out of scope for v1.
+
+- **CAP-16**
+  - **intent:** The Admin can configure the Standard/Urgent Case fee amounts and the Platform Fee percentage applied to every Case.
+  - **success:** Defaults at launch: ₹1,000 Standard / ₹2,000 Urgent / 20% Platform Fee. v1 pricing is platform-wide, not per-doctor (v2 item). Changes apply prospectively only — already-submitted Cases and already-calculated Payouts are unaffected.
 
 ## Constraints
 
@@ -98,14 +106,12 @@ SecOpinion v1 succeeds if a meaningful share of submitted Cases receive a Doctor
 
 ## Assumptions
 
-- Capability numbering CAP-1..CAP-14 mirrors the PRD's FR-1..FR-14 one-to-one for traceability, since the PRD's own functional-requirement breakdown already maps cleanly to independently reviewable capabilities.
+- Capability numbering CAP-1..CAP-14 mirrors the PRD's FR-1..FR-14 one-to-one for traceability, since the PRD's own functional-requirement breakdown already maps cleanly to independently reviewable capabilities; CAP-15/CAP-16 extend this same mirror to the later-added FR-15/FR-16.
 
 ## Open Questions
 
-- Is the Doctor specialty model a fixed enum list or free text (affects CAP-4/CAP-9)?
 - Is OTP-fallback login supported alongside password login, or is v1 password-only (CAP-2)?
 - Is zero-document Case submission ever allowed (CAP-7)?
 - Are JPEG/PNG/PDF sufficient Document formats, or is DICOM needed in v1 (CAP-7)?
-- What is the exact Platform Fee / Doctor Payout split percentage within the confirmed 20-30% platform range (CAP-12)?
 - Is there any post-closure clarification channel between Patient and Doctor, or is the written Opinion final (CAP-11)?
 - What are the platform uptime SLA target, deployment scaling specifics (replica count, resource limits, DB connection pooling), and observability/backup-DR policy before production cutover?

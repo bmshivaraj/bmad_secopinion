@@ -8,7 +8,7 @@
 
 ## 1. What SecOpinion Is, in One Paragraph
 
-SecOpinion connects patients who've been recommended surgery or major treatment with independent doctors who review their case (documents + description) and give a written second opinion — for a flat fee (₹1,000 standard / ₹2,000 urgent), split between the platform and the reviewing doctor. v1 is explicitly a proof-of-concept: real money, real medical documents, but a founder-accepted reduced bar on formal compliance and security infrastructure, offset by a few concrete v1 safety floors (see §7).
+SecOpinion connects patients who've been recommended surgery or major treatment with independent doctors who review their case (documents + description) and give a written second opinion — for an Admin-configured fee (defaulting to ₹1,000 standard / ₹2,000 urgent at launch, per AD-16), split between the platform and the reviewing doctor at an Admin-configured percentage (defaulting to 20% platform / 80% doctor). v1 is explicitly a proof-of-concept: real money, real medical documents, but a founder-accepted reduced bar on formal compliance and security infrastructure, offset by a few concrete v1 safety floors (see §7).
 
 ## 2. The Big Architectural Bet: Modular Monolith
 
@@ -68,7 +68,7 @@ Architecture's job is to fix only the decisions that would let two people buildi
 
 - **Product-level open questions that belong to the PRD, not architecture:** whether OTP-fallback login is supported alongside password login, whether zero-document case submission is ever allowed, which document formats are supported, and whether there's any post-closure clarification channel. Architecture would be overstepping to invent answers here.
 - **Operational maturity items that come before production, not before v1 code:** full observability/monitoring, backup/DR policy, CI/CD specifics, multi-region topology, and deployment scaling specifics.
-- **A business decision, not a technical one:** the exact doctor payout percentage split (somewhere in the 20-30% platform / 70-80% doctor range, per the founder).
+- ~~A business decision, not a technical one: the exact doctor payout percentage split~~ — resolved since this snapshot was written: AD-16 makes both the doctor payout split and the Case fee amounts Admin-configurable at runtime (defaults 20% / ₹1,000 / ₹2,000), rather than a founder-fixed constant.
 
 ## 8. How This Document Relates to the Spine
 

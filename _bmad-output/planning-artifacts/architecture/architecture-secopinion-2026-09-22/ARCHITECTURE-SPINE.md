@@ -8,7 +8,7 @@ scope: 'SecOpinion v1 POC — full product architecture, all v1 features (FR-1 t
 status: final
 created: '2026-09-22'
 updated: '2026-09-23'
-binds: ['FR-1', 'FR-2', 'FR-3', 'FR-4', 'FR-5', 'FR-6', 'FR-7', 'FR-8', 'FR-9', 'FR-10', 'FR-11', 'FR-12', 'FR-13', 'FR-14']
+binds: ['FR-1', 'FR-2', 'FR-3', 'FR-4', 'FR-5', 'FR-6', 'FR-7', 'FR-8', 'FR-9', 'FR-10', 'FR-11', 'FR-12', 'FR-13', 'FR-14', 'FR-15', 'FR-16']
 sources: ['_bmad-output/planning-artifacts/prds/prd-secopinion-2026-09-20/prd.md']
 companions: []
 ---
@@ -142,6 +142,18 @@ Patients and Doctors are leaf modules — they never call Cases, Payments, or Ad
 - **Prevents:** access-control logic splitting across `StorageProvider`, `service.ts`, and route handlers with divergent rules for who can read a Document
 - **Rule:** access control for medical Documents is enforced at the owning module's service boundary (Cases module's `service.ts` — Documents are semantically owned by Cases), never inside `StorageProvider` and never re-implemented in a route handler. `StorageProvider`'s interface takes no user/role context and is not responsible for authorization; it only stores/retrieves bytes for an already-authorized caller. Any other module needing a Document (e.g. Payments for audit) must call the Cases module's service function, which performs the patient-owns-case / doctor-assigned-to-case / admin-sees-all check before delegating to `StorageProvider`.
 
+### AD-15 — Specialty catalog: admin-extensible reference table [ADOPTED]
+
+- **Binds:** Doctors module (FR-4), Cases module (FR-9 queue matching), Admin module (FR-15)
+- **Prevents:** a hardcoded application-code enum that requires a redeploy every time a new Specialty is needed
+- **Rule:** `Specialty` is a DB-backed reference table (`id`, `name`, `active`), not a hardcoded TypeScript enum. `Doctor.specialties` (AD-12) is a many-to-many join to this table. Seeded with 15 default rows at initial migration: Orthopedics, Cardiology, Oncology, Neurology, Neurosurgery, Gastroenterology, Nephrology, Urology, Pulmonology, Gynecology & Obstetrics, ENT (Otolaryngology), Ophthalmology, General Surgery, Endocrinology, Dermatology. The Admin module exposes an add-only management interface (FR-15) that inserts new active rows — no delete/deactivate path in v1. Both Doctor registration (FR-4) and Case specialty selection (FR-7/FR-9 matching) read from the current active row set.
+
+### AD-16 — Admin-configurable pricing: Case fees and Platform Fee percentage [ADOPTED]
+
+- **Binds:** Payments module (FR-8, FR-12), Admin module (FR-16)
+- **Prevents:** hardcoded currency/percentage literals scattered across Cases/Payments business logic that would require a redeploy to change pricing
+- **Rule:** Standard/Urgent Case fee amounts and the Platform Fee percentage are stored as a single Admin-owned settings record (e.g. `PlatformSettings`), not hardcoded constants, read by the Cases module at Case submission (FR-8) and by the Payments module at payout calculation (FR-12). Defaults seeded at launch: Standard ₹1,000, Urgent ₹2,000, Platform Fee 20% (Doctor Payout 80%). v1 pricing is platform-wide only — no per-doctor pricing (per-doctor pricing by expertise/rating is an explicit v2 item). A settings change applies prospectively only: a Case already submitted keeps the fee captured at its own submission time; a Payout already calculated keeps the split percentage in effect at Case closure — no retroactive recalculation of either.
+
 ## Consistency Conventions
 
 | Concern | Convention |
@@ -218,17 +230,19 @@ secopinion/
 | FR-1 Mobile + OTP Registration | Patients module | AD-7 (OtpProvider), AD-9 |
 | FR-2 Post-OTP Credential Setup | Patients module | AD-7, AD-9 |
 | FR-3 Guardian Registration for Minors | Patients module | AD-9 |
-| FR-4 Doctor Registration with Credential Submission | Doctors module | AD-7 (StorageProvider for credential docs), AD-9 |
+| FR-4 Doctor Registration with Credential Submission | Doctors module | AD-7 (StorageProvider for credential docs), AD-9, AD-15 (Specialty catalog) |
 | FR-5 Manual Verification Review | Doctors + Admin modules | AD-2 (Admin calls Doctors.service), AD-9 |
 | FR-6 Doctor UPI Payment Details | Doctors module | AD-9 |
 | FR-7 Problem Description and Document Upload | Cases module | AD-7 (StorageProvider), AD-9, AD-14 (access control) |
-| FR-8 Urgency Selection and Payment | Cases + Payments modules | AD-3 (PaymentProvider), AD-2 |
-| FR-9 Specialty-Filtered Case Queue | Cases module | AD-5, AD-6, AD-12 (multi-specialty match), AD-13 (state machine) |
+| FR-8 Urgency Selection and Payment | Cases + Payments modules | AD-3 (PaymentProvider), AD-2, AD-16 (configurable pricing) |
+| FR-9 Specialty-Filtered Case Queue | Cases module | AD-5, AD-6, AD-12 (multi-specialty match), AD-13 (state machine), AD-15 (Specialty catalog) |
 | FR-10 Request Additional Documents | Cases module | AD-7 (StorageProvider), AD-9, AD-11 (SLA pause), AD-13 |
 | FR-11 Submit Opinion and Close Case | Cases module | AD-2, AD-9, AD-13 |
-| FR-12 Doctor Payout on Case Closure | Payments module | AD-3 (PaymentProvider), AD-10 (batched payout) |
+| FR-12 Doctor Payout on Case Closure | Payments module | AD-3 (PaymentProvider), AD-10 (batched payout), AD-16 (configurable split) |
 | FR-13 Admin-Approved Refund on Response SLA Breach | Cases + Payments + Admin modules | AD-6 (SLA clock), AD-8 (daily job), AD-11 (pause/resume), AD-13 (state machine), AD-3 (PaymentProvider) |
 | FR-14 Baseline Access Control for Medical Documents | Cross-cutting | AD-14 (access control ownership), AD-7 (StorageProvider), AD-9 (JWT role at route boundary) |
+| FR-15 Specialty Catalog Management | Admin + Doctors modules | AD-15, AD-2 (Admin calls Doctors.service) |
+| FR-16 Case Fee & Platform Fee Percentage Configuration | Admin + Payments modules | AD-16, AD-2 |
 
 ## Deferred
 
@@ -246,7 +260,7 @@ secopinion/
 - **Platform uptime SLA target** (e.g. 99% vs 99.5%) — not yet decided; revisit at pre-production readiness review. Distinct from the product-facing 5-day/120h Case Response SLA, which is decided (AD-8, AD-11, AD-13).
 - **Mid-case urgency escalation** — deferred to v2 per PRD §2.3.
 - **Single Admin role scaling** (multiple admins, admin permissions tiers) — v1 keeps a single Platform Admin Account per PRD; revisit if admin workload grows.
-- **Exact Doctor Payout percentage split** — a founder-chosen value in the 20-30% platform / 70-80% doctor range, not yet finalized; PRD FR-12 open question, not architecture's to invent.
+- ~~Exact Doctor Payout percentage split~~ — Resolved: AD-16 makes it Admin-configurable, defaulting to 20% platform / 80% doctor at launch; no longer a founder-fixed constant.
 - **Post-closure clarification channel** (PRD Open Question 7) — whether a Patient can seek any clarification after a Case closes with an Opinion is unresolved at the PRD level; no mechanism exists in v1 either way; not architecture's to invent.
 - **Zero-document Case submission and supported Document formats** (PRD Open Questions 3 and 4) — PRD FR-7 `[ASSUMPTION]` tags not yet confirmed; `StorageProvider` validation rules will follow whatever the PRD settles; not architecture's to invent.
 - **OTP-fallback login vs. password-only** (PRD Open Question 2) — unresolved at the PRD level; affects the `OtpProvider`/session interaction but the choice itself belongs to product, not architecture.

@@ -1,16 +1,48 @@
 import { DomainError } from "../../../shared/api-envelope";
 
+export const GUARDIAN_RELATIONSHIPS = ["parent", "legal_guardian", "other_authorized_guardian"] as const;
+export type GuardianRelationship = (typeof GUARDIAN_RELATIONSHIPS)[number];
+
 export interface Patient {
   id: string;
   mobileNumber: string;
   username: string | null;
   passwordHash: string | null;
+  isMinor: boolean;
+  isGuardianRegistered: boolean;
+  minorName: string | null;
+  guardianRelationship: GuardianRelationship | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
+export interface GuardianRegistrationInput {
+  isMinor?: boolean;
+  minorName?: string;
+  guardianRelationship?: string;
+  authorityAttested?: boolean;
+}
+
+export interface GuardianRegistrationData {
+  isMinor: boolean;
+  isGuardianRegistered: boolean;
+  minorName: string | null;
+  guardianRelationship: GuardianRelationship | null;
+}
+
+export interface PatientMinorContext extends GuardianRegistrationData {
+  patientId: string;
+}
+
 export class InvalidRequestError extends DomainError {
   readonly code = "VALIDATION_ERROR";
+}
+
+export class InvalidGuardianDeclarationError extends DomainError {
+  readonly code = "GUARDIAN_DECLARATION_INVALID";
+  constructor() {
+    super("Minor registration requires a name, guardian relationship, and authority attestation.");
+  }
 }
 
 export class PasswordPolicyError extends DomainError {

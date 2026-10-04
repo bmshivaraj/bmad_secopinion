@@ -37,6 +37,10 @@ function createFixture(options: { expiresAt?: Date; validCode?: string; createEr
         mobileNumber,
         username: null,
         passwordHash: null,
+        isMinor: false,
+        isGuardianRegistered: false,
+        minorName: null,
+        guardianRelationship: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -49,13 +53,24 @@ function createFixture(options: { expiresAt?: Date; validCode?: string; createEr
     async findByUsername(username: string) {
       return [...patients.values()].find((patient) => patient.username === username) ?? null;
     },
-    async setCredentials(patientId: string, username: string, passwordHash: string) {
+    async setCredentials(patientId: string, username: string, passwordHash: string, guardianRegistration: {
+      isMinor: boolean;
+      isGuardianRegistered: boolean;
+      minorName: string | null;
+      guardianRelationship: Patient["guardianRelationship"];
+    }) {
       const patient = [...patients.values()].find((entry) => entry.id === patientId);
       if (!patient || patient.passwordHash !== null) return false;
       if ([...patients.values()].some((entry) => entry.id !== patientId && entry.username === username)) {
         throw { code: "P2002" };
       }
-      patients.set(patient.mobileNumber, { ...patient, username, passwordHash, updatedAt: new Date() });
+      patients.set(patient.mobileNumber, {
+        ...patient,
+        username,
+        passwordHash,
+        ...guardianRegistration,
+        updatedAt: new Date(),
+      });
       return true;
     },
   };
@@ -122,7 +137,73 @@ test("sets a normalized username and Argon2id hash with valid setup authorizatio
   assert.equal(storedPatient?.username, "alice_01");
   assert.ok(storedPatient?.passwordHash?.startsWith("$argon2id$"));
   assert.notEqual(storedPatient?.passwordHash, "StrongPass1");
+  assert.equal(storedPatient?.isMinor, false);
+  assert.equal(storedPatient?.isGuardianRegistered, false);
+  assert.equal(storedPatient?.minorName, null);
+  assert.equal(storedPatient?.guardianRelationship, null);
   assert.equal("passwordHash" in result, false);
+});
+
+test("persists an attested minor declaration and exposes it through the Patients service", async () => {
+  const fixture = createFixture();
+  const patient = await createRegisteredPatient(fixture);
+  const result = await fixture.service.setPassword(
+    signPatientPasswordSetupToken(patient.id),
+    "guardian_user",
+    "StrongPass1",
+    {
+      isMinor: true,
+      minorName: "  Jordan Doe  ",
+      guardianRelationship: "legal_guardian",
+      authorityAttested: true,
+    },
+  );
+  const storedPatient = fixture.patients.get(patient.mobileNumber);
+
+  assert.equal(result.patientId, patient.id);
+  assert.equal(storedPatient?.isMinor, true);
+  assert.equal(storedPatient?.isGuardianRegistered, true);
+  assert.equal(storedPatient?.minorName, "Jordan Doe");
+  assert.equal(storedPatient?.guardianRelationship, "legal_guardian");
+  assert.deepEqual(await fixture.service.getPatientMinorContext(patient.id), {
+    patientId: patient.id,
+    isMinor: true,
+    isGuardianRegistered: true,
+    minorName: "Jordan Doe",
+    guardianRelationship: "legal_guardian",
+  });
+  assert.equal(await fixture.service.getPatientMinorContext(randomUUID()), null);
+});
+
+test("rejects incomplete guardian declarations without changing patient credentials or role flags", async () => {
+  const fixture = createFixture();
+  const patient = await createRegisteredPatient(fixture);
+  const setupToken = signPatientPasswordSetupToken(patient.id);
+  const incompleteDeclarations = [
+    { isMinor: true, guardianRelationship: "parent", authorityAttested: true },
+    { isMinor: true, minorName: "Jordan Doe", authorityAttested: true },
+    { isMinor: true, minorName: "Jordan Doe", guardianRelationship: "parent", authorityAttested: false },
+    { isMinor: true, minorName: "Jordan Doe", guardianRelationship: "sibling", authorityAttested: true },
+    { isMinor: true, minorName: "   ", guardianRelationship: "parent", authorityAttested: true },
+    { isMinor: true, minorName: "a".repeat(121), guardianRelationship: "parent", authorityAttested: true },
+    { isMinor: true, minorName: "Jordan\nDoe", guardianRelationship: "parent", authorityAttested: true },
+    { isMinor: false, minorName: "Jordan Doe", guardianRelationship: "parent", authorityAttested: true },
+  ];
+
+  for (const declaration of incompleteDeclarations) {
+    await assert.rejects(
+      fixture.service.setPassword(setupToken, "guardian_user", "StrongPass1", declaration),
+      { code: "GUARDIAN_DECLARATION_INVALID" },
+    );
+  }
+
+  const unchangedPatient = fixture.patients.get(patient.mobileNumber);
+  assert.equal(unchangedPatient?.username, null);
+  assert.equal(unchangedPatient?.passwordHash, null);
+  assert.equal(unchangedPatient?.isMinor, false);
+  assert.equal(unchangedPatient?.isGuardianRegistered, false);
+  assert.equal(unchangedPatient?.minorName, null);
+  assert.equal(unchangedPatient?.guardianRelationship, null);
 });
 
 test("accepts exact username and password minimums and rejects overlong values", async () => {
@@ -189,6 +270,15 @@ test("rejects expired, invalid, and replayed password setup authorization", asyn
   await assert.rejects(fixture.service.setPassword("not-a-token", "new_user", "StrongPass1"), {
     code: "PASSWORD_SETUP_UNAUTHORIZED",
   });
+  await assert.rejects(
+    fixture.service.setPassword("not-a-token", "new_user", "StrongPass1", {
+      isMinor: true,
+      minorName: "Jordan Doe",
+      guardianRelationship: "parent",
+      authorityAttested: true,
+    }),
+    { code: "PASSWORD_SETUP_UNAUTHORIZED" },
+  );
   await assert.rejects(
     fixture.service.setPassword(signPatientPasswordSetupToken(patient.id, "-1s"), "new_user", "StrongPass1"),
     { code: "PASSWORD_SETUP_UNAUTHORIZED" },
@@ -366,6 +456,10 @@ test("registration routes share OTP state across requests and keep the public en
     mobileNumber: number,
     username: null,
     passwordHash: null,
+    isMinor: false,
+    isGuardianRegistered: false,
+    minorName: null,
+    guardianRelationship: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -416,24 +510,38 @@ test("setup, login, and logout routes preserve envelopes and cookie security", a
   };
   const mobileNumber = uniqueMobileNumber();
   const patientId = randomUUID();
-  let patient: Patient | null = null;
-  patientsRepository.findByMobileNumber = async () => patient;
+  const patientState: { current: Patient | null } = { current: null };
+  patientsRepository.findByMobileNumber = async () => patientState.current;
   patientsRepository.create = async (number) => {
-    patient = {
+    const createdPatient: Patient = {
       id: patientId,
       mobileNumber: number,
       username: null,
       passwordHash: null,
+      isMinor: false,
+      isGuardianRegistered: false,
+      minorName: null,
+      guardianRelationship: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
-    return patient;
+    patientState.current = createdPatient;
+    return createdPatient;
   };
-  patientsRepository.findById = async (id) => (id === patient?.id ? patient : null);
-  patientsRepository.findByUsername = async (username) => (username === patient?.username ? patient : null);
-  patientsRepository.setCredentials = async (id, username, passwordHash) => {
-    if (id !== patient?.id || patient.passwordHash !== null) return false;
-    patient = { ...patient, username, passwordHash, updatedAt: new Date() };
+  patientsRepository.findById = async (id) => (id === patientState.current?.id ? patientState.current : null);
+  patientsRepository.findByUsername = async (username) => (
+    username === patientState.current?.username ? patientState.current : null
+  );
+  patientsRepository.setCredentials = async (id, username, passwordHash, guardianRegistration) => {
+    const currentPatient = patientState.current;
+    if (!currentPatient || id !== currentPatient.id || currentPatient.passwordHash !== null) return false;
+    patientState.current = {
+      ...currentPatient,
+      username,
+      passwordHash,
+      ...guardianRegistration,
+      updatedAt: new Date(),
+    };
     return true;
   };
 
@@ -455,15 +563,66 @@ test("setup, login, and logout routes preserve envelopes and cookie security", a
       code: "123456",
     }));
     const setupCookie = (verifyResponse.headers.get("set-cookie") ?? "").split(";")[0];
+    const incompleteGuardianSetup = await passwordSetupPost(new Request("http://localhost/api/patients/password/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: setupCookie },
+      body: JSON.stringify({
+        username: "route_user",
+        password: "StrongPass1",
+        isMinor: true,
+        minorName: "Jordan Doe",
+        guardianRelationship: "parent",
+        authorityAttested: false,
+      }),
+    }));
+    assert.equal(incompleteGuardianSetup.status, 400);
+    const incompleteGuardianBody = await incompleteGuardianSetup.json() as {
+      data: null;
+      error: { code: string };
+    };
+    assert.equal(incompleteGuardianBody.error.code, "GUARDIAN_DECLARATION_INVALID");
+    assert.equal(patientState.current?.passwordHash, null);
+
+    const invalidRelationshipResponse = await passwordSetupPost(new Request("http://localhost/api/patients/password/setup", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: setupCookie },
+      body: JSON.stringify({
+        username: "route_user",
+        password: "StrongPass1",
+        isMinor: true,
+        minorName: "Jordan Doe",
+        guardianRelationship: "sibling",
+        authorityAttested: true,
+      }),
+    }));
+    assert.equal(invalidRelationshipResponse.status, 400);
+    const invalidRelationshipBody = await invalidRelationshipResponse.json() as {
+      data: null;
+      error: { code: string };
+    };
+    assert.equal(invalidRelationshipBody.error.code, "VALIDATION_ERROR");
+    assert.equal(patientState.current?.passwordHash, null);
+
     const setupResponse = await passwordSetupPost(new Request("http://localhost/api/patients/password/setup", {
       method: "POST",
       headers: { "content-type": "application/json", cookie: setupCookie },
-      body: JSON.stringify({ username: "route_user", password: "StrongPass1" }),
+      body: JSON.stringify({
+        username: "route_user",
+        password: "StrongPass1",
+        isMinor: true,
+        minorName: "Jordan Doe",
+        guardianRelationship: "other_authorized_guardian",
+        authorityAttested: true,
+      }),
     }));
     assert.equal(setupResponse.status, 200);
     const setupBody = await setupResponse.json() as { data: { patientId: string; username: string }; error: null };
     assert.deepEqual(setupBody, { data: { patientId, username: "route_user" }, error: null });
     assert.equal("passwordHash" in setupBody.data, false);
+    assert.equal(patientState.current?.isMinor, true);
+    assert.equal(patientState.current?.isGuardianRegistered, true);
+    assert.equal(patientState.current?.minorName, "Jordan Doe");
+    assert.equal(patientState.current?.guardianRelationship, "other_authorized_guardian");
     const clearedSetupCookie = setupResponse.headers.get("set-cookie") ?? "";
     assert.match(clearedSetupCookie, /Max-Age=0/i);
     assert.doesNotMatch(clearedSetupCookie, /patient_session=/);
@@ -510,6 +669,10 @@ test("registration route returns typed validation and duplicate error responses"
     mobileNumber,
     username: null,
     passwordHash: null,
+    isMinor: false,
+    isGuardianRegistered: false,
+    minorName: null,
+    guardianRelationship: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   });

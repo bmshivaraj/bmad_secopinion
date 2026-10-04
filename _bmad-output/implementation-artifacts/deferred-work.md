@@ -21,3 +21,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-3-post-otp-password-setup-login.md`
   summary: Move patient login-failure throttling to shared TTL storage before deploying multiple application instances.
   evidence: The current 20-failure/15-minute throttle is process-local, so requests routed to different instances do not share the same attempt count; deployment topology is not yet specified.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-guardian-registration-for-minor-patient.md`
+  summary: Run database-backed guardian migration and Patient repository verification when valid PostgreSQL credentials or a local Docker database are available.
+  evidence: The configured database rejected credentials with `P1000`, and Docker Desktop was unavailable. Prisma schema validation, client generation, tests, and build passed, but the migrated Patient row could not be queried.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-4-guardian-registration-for-minor-patient.md`
+  summary: Decide whether guardian authority attestations require timestamped/versioned audit evidence before wider rollout.
+  evidence: v1 now requires the attestation and persists guardian-registration status, but the PRD does not specify attestation text retention, timestamp, or versioning requirements.

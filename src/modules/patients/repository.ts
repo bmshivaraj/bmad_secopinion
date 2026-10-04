@@ -1,6 +1,6 @@
 // Patients module's own DB access (AD-2) -- no other module may query these tables directly.
 import { prisma } from "../../shared/prisma-client";
-import type { Patient } from "./domain";
+import type { GuardianRegistrationData, Patient } from "./domain";
 
 export const patientsRepository = {
   async findByMobileNumber(mobileNumber: string): Promise<Patient | null> {
@@ -15,10 +15,15 @@ export const patientsRepository = {
     return prisma.patient.findUnique({ where: { username } });
   },
 
-  async setCredentials(patientId: string, username: string, passwordHash: string): Promise<boolean> {
+  async setCredentials(
+    patientId: string,
+    username: string,
+    passwordHash: string,
+    guardianRegistration: GuardianRegistrationData,
+  ): Promise<boolean> {
     const result = await prisma.patient.updateMany({
       where: { id: patientId, passwordHash: null },
-      data: { username, passwordHash },
+      data: { username, passwordHash, ...guardianRegistration },
     });
     return result.count === 1;
   },

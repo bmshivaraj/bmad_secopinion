@@ -8,7 +8,9 @@ import { otpProvider } from "../../shared/otp-provider";
 import type { OtpProvider } from "../../shared/otp-provider";
 import {
   InvalidCredentialsError,
+  InvalidGuardianDeclarationError,
   InvalidRequestError,
+  GUARDIAN_RELATIONSHIPS,
   isOtpRequestRateLimited,
   MobileAlreadyRegisteredError,
   OtpExpiredError,
@@ -17,12 +19,19 @@ import {
   PasswordPolicyError,
   PasswordSetupAuthorizationError,
   recordOtpRequest,
+  type GuardianRegistrationData,
+  type GuardianRegistrationInput,
+  type GuardianRelationship,
+  type PatientMinorContext as PatientMinorContextType,
   UsernameAlreadyTakenError,
   type Patient,
 } from "./domain";
 import { patientsRepository } from "./repository";
 
+export type { PatientMinorContext } from "./domain";
+
 const MAX_PASSWORD_LENGTH = 1024;
+const MAX_MINOR_NAME_LENGTH = 120;
 const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 20;
 const DUMMY_PASSWORD_HASH = argon2.hash("secopinion-invalid-account-dummy", { type: argon2.argon2id });
@@ -55,6 +64,43 @@ function isValidPassword(password: string): boolean {
     && /[A-Z]/.test(password)
     && /[a-z]/.test(password)
     && /[0-9]/.test(password);
+}
+
+function validateGuardianRegistration(input: GuardianRegistrationInput = {}): GuardianRegistrationData {
+  if (input.isMinor !== true) {
+    if (
+      input.minorName !== undefined
+      || input.guardianRelationship !== undefined
+      || input.authorityAttested !== undefined
+    ) {
+      throw new InvalidGuardianDeclarationError();
+    }
+    return {
+      isMinor: false,
+      isGuardianRegistered: false,
+      minorName: null,
+      guardianRelationship: null,
+    };
+  }
+
+  const minorName = input.minorName?.trim();
+  const relationship = input.guardianRelationship;
+  if (
+    !minorName
+    || minorName.length > MAX_MINOR_NAME_LENGTH
+    || /[\u0000-\u001f\u007f]/.test(minorName)
+    || !GUARDIAN_RELATIONSHIPS.includes(relationship as GuardianRelationship)
+    || input.authorityAttested !== true
+  ) {
+    throw new InvalidGuardianDeclarationError();
+  }
+
+  return {
+    isMinor: true,
+    isGuardianRegistered: true,
+    minorName,
+    guardianRelationship: relationship as GuardianRelationship,
+  };
 }
 
 export function createPatientsService(
@@ -152,6 +198,7 @@ export function createPatientsService(
       setupToken: string,
       username: string,
       password: string,
+      guardianInput: GuardianRegistrationInput = {},
     ): Promise<{ patientId: string; username: string }> {
       let patientId: string;
       try {
@@ -166,6 +213,7 @@ export function createPatientsService(
       if (!isValidPassword(password)) {
         throw new PasswordPolicyError();
       }
+      const guardianRegistration = validateGuardianRegistration(guardianInput);
 
       const patient = await repository.findById(patientId);
       if (!patient || patient.passwordHash !== null) {
@@ -180,7 +228,12 @@ export function createPatientsService(
 
       const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
       try {
-        const updated = await repository.setCredentials(patientId, normalizedUsername, passwordHash);
+        const updated = await repository.setCredentials(
+          patientId,
+          normalizedUsername,
+          passwordHash,
+          guardianRegistration,
+        );
         if (!updated) {
           throw new PasswordSetupAuthorizationError();
         }
@@ -192,6 +245,18 @@ export function createPatientsService(
       }
 
       return { patientId, username: normalizedUsername };
+    },
+
+    async getPatientMinorContext(patientId: string): Promise<PatientMinorContextType | null> {
+      const patient = await repository.findById(patientId);
+      if (!patient) return null;
+      return {
+        patientId: patient.id,
+        isMinor: patient.isMinor,
+        isGuardianRegistered: patient.isGuardianRegistered,
+        minorName: patient.minorName,
+        guardianRelationship: patient.guardianRelationship,
+      };
     },
 
     async login(username: string, password: string): Promise<{ patientId: string; token: string }> {

@@ -1,7 +1,7 @@
 // Patients module route-handler logic, wired into src/app/api routes starting Story 1.2.
 import { NextResponse } from "next/server";
 import { DomainError, fail } from "../../../shared/api-envelope";
-import { InvalidRequestError } from "../domain";
+import { GUARDIAN_RELATIONSHIPS, InvalidRequestError, type GuardianRegistrationInput } from "../domain";
 
 const MOBILE_NUMBER_PATTERN = /^\+?[0-9]{10,15}$/;
 
@@ -18,6 +18,7 @@ export interface VerifyRegistrationRequest {
 export interface PasswordSetupRequest {
   username: string;
   password: string;
+  guardianRegistration: GuardianRegistrationInput;
 }
 
 export interface PatientLoginRequest {
@@ -33,6 +34,20 @@ function requireString(body: Record<string, unknown>, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new InvalidRequestError(`${field} is required`);
   }
+  return value;
+}
+
+function optionalString(body: Record<string, unknown>, field: string): string | undefined {
+  const value = body[field];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") throw new InvalidRequestError(`${field} must be a string`);
+  return value;
+}
+
+function optionalBoolean(body: Record<string, unknown>, field: string): boolean | undefined {
+  const value = body[field];
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new InvalidRequestError(`${field} must be a boolean`);
   return value;
 }
 
@@ -58,7 +73,23 @@ export async function parseVerifyRegistrationRequest(request: Request): Promise<
 
 export async function parsePasswordSetupRequest(request: Request): Promise<PasswordSetupRequest> {
   const body = await parseJsonBody(request);
-  return { username: requireString(body, "username"), password: requireString(body, "password") };
+  const guardianRelationship = optionalString(body, "guardianRelationship");
+  if (
+    guardianRelationship !== undefined
+    && !GUARDIAN_RELATIONSHIPS.includes(guardianRelationship as (typeof GUARDIAN_RELATIONSHIPS)[number])
+  ) {
+    throw new InvalidRequestError("guardianRelationship is invalid");
+  }
+  return {
+    username: requireString(body, "username"),
+    password: requireString(body, "password"),
+    guardianRegistration: {
+      isMinor: optionalBoolean(body, "isMinor") ?? false,
+      minorName: optionalString(body, "minorName"),
+      guardianRelationship,
+      authorityAttested: optionalBoolean(body, "authorityAttested"),
+    },
+  };
 }
 
 export async function parsePatientLoginRequest(request: Request): Promise<PatientLoginRequest> {
@@ -103,6 +134,7 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
   OTP_EXPIRED: 400,
   PASSWORD_POLICY_ERROR: 400,
   PASSWORD_SETUP_UNAUTHORIZED: 401,
+  GUARDIAN_DECLARATION_INVALID: 400,
   USERNAME_ALREADY_TAKEN: 409,
   INVALID_CREDENTIALS: 401,
 };

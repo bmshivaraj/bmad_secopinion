@@ -22,7 +22,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -183,6 +184,39 @@ a {
   outline: none;
   background: #fff;
   color: var(--ink);
+}
+
+.field-group select {
+  width: 100%;
+  min-height: 50px;
+  padding: 0 14px;
+  border: 1px solid #cbd7ce;
+  border-radius: 4px;
+  outline: none;
+  background: #fff;
+  color: var(--ink);
+}
+
+.field-group select:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgb(23 99 79 / 14%);
+}
+
+.declaration-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink);
+  cursor: pointer;
+  line-height: 1.5;
+}
+
+.declaration-toggle input[type="checkbox"] {
+  width: 18px;
+  min-height: 18px;
+  flex: 0 0 18px;
+  margin: 0;
+  accent-color: var(--green);
 }
 
 .field-group input:focus {

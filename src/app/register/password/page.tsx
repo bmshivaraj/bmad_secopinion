@@ -12,6 +12,7 @@ export default function PasswordSetupPage() {
   const router = useRouter();
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isMinor, setIsMinor] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -20,6 +21,7 @@ export default function PasswordSetupPage() {
     const username = String(formData.get("username") ?? "");
     const password = String(formData.get("password") ?? "");
     const confirmation = String(formData.get("confirmation") ?? "");
+    const declaresMinor = formData.get("isMinor") === "on";
     if (password !== confirmation) {
       setError("Passwords do not match.");
       return;
@@ -30,7 +32,16 @@ export default function PasswordSetupPage() {
       const response = await fetch("/api/patients/password/setup", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({
+          username,
+          password,
+          isMinor: declaresMinor,
+          ...(declaresMinor && {
+            minorName: String(formData.get("minorName") ?? ""),
+            guardianRelationship: String(formData.get("guardianRelationship") ?? ""),
+            authorityAttested: formData.get("authorityAttested") === "on",
+          }),
+        }),
       });
       const result = await response.json() as ApiResult;
       if (!response.ok || result.error) {
@@ -111,6 +122,51 @@ export default function PasswordSetupPage() {
                 required
               />
             </div>
+            <div className="field-group declaration-toggle">
+              <label htmlFor="isMinor">
+                <input
+                  id="isMinor"
+                  name="isMinor"
+                  type="checkbox"
+                  checked={isMinor}
+                  onChange={(event) => setIsMinor(event.currentTarget.checked)}
+                />
+                I am registering for a minor
+              </label>
+            </div>
+            {isMinor && (
+              <>
+                <div className="field-group">
+                  <label htmlFor="minorName">Minor Patient name</label>
+                  <input
+                    id="minorName"
+                    name="minorName"
+                    type="text"
+                    autoComplete="off"
+                    maxLength={120}
+                    required
+                  />
+                  <span className="field-hint">
+                    Used to identify the minor when a Case is submitted and shared with its reviewing Doctor.
+                  </span>
+                </div>
+                <div className="field-group">
+                  <label htmlFor="guardianRelationship">Your relationship to the minor</label>
+                  <select id="guardianRelationship" name="guardianRelationship" defaultValue="" required>
+                    <option value="" disabled>Select a relationship</option>
+                    <option value="parent">Parent</option>
+                    <option value="legal_guardian">Legal guardian</option>
+                    <option value="other_authorized_guardian">Other authorized guardian</option>
+                  </select>
+                </div>
+                <div className="field-group declaration-toggle">
+                  <label htmlFor="authorityAttested">
+                    <input id="authorityAttested" name="authorityAttested" type="checkbox" required />
+                    I attest that I am authorized to act for this minor
+                  </label>
+                </div>
+              </>
+            )}
             {error && <p className="auth-error" role="alert">{error}</p>}
             <button className="auth-submit" type="submit" disabled={isSubmitting}>
               {isSubmitting ? "Setting password..." : "Create password"}

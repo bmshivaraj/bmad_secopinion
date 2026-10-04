@@ -11,8 +11,8 @@ import { patientsService } from "../../../../../modules/patients/service";
 export async function POST(request: Request): Promise<NextResponse> {
   try {
     const setupToken = readRequestCookie(request, PATIENT_SETUP_COOKIE);
-    const { username, password } = await parsePasswordSetupRequest(request);
-    const result = await patientsService.setPassword(setupToken ?? "", username, password);
+    const { username, password, guardianRegistration } = await parsePasswordSetupRequest(request);
+    const result = await patientsService.setPassword(setupToken ?? "", username, password, guardianRegistration);
     const response = NextResponse.json(ok(result));
     response.cookies.set(PATIENT_SETUP_COOKIE, "", {
       httpOnly: true,

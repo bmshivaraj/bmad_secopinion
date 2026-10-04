@@ -33,3 +33,24 @@ export function verifyAuthToken(token: string): AuthContext {
 
   return { userId: payload.userId, role: payload.role as Role };
 }
+
+const PATIENT_PASSWORD_SETUP_PURPOSE = "patient-password-setup";
+
+export function signPatientPasswordSetupToken(
+  patientId: string,
+  expiresIn: jwt.SignOptions["expiresIn"] = "15m",
+): string {
+  return jwt.sign({ patientId, purpose: PATIENT_PASSWORD_SETUP_PURPOSE }, getJwtSecret(), { expiresIn });
+}
+
+export function verifyPatientPasswordSetupToken(token: string): { patientId: string } {
+  const payload = jwt.verify(token, getJwtSecret());
+  if (
+    typeof payload === "string" ||
+    typeof payload.patientId !== "string" ||
+    payload.purpose !== PATIENT_PASSWORD_SETUP_PURPOSE
+  ) {
+    throw new Error("Invalid patient password setup token");
+  }
+  return { patientId: payload.patientId };
+}

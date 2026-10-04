@@ -39,6 +39,7 @@ model PlatformSettings {
 model Patient {
   id           String   @id @default(uuid())
   mobileNumber String   @unique @map("mobile_number")
+  username     String?  @unique
   passwordHash String?  @map("password_hash")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")

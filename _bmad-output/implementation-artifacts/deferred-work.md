@@ -17,3 +17,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-2-mobile-otp-registration.md`
   summary: Replace process-local OTP challenge and registration rate-limit state with shared TTL storage before deploying multiple application instances.
   evidence: The current approved v1 uses in-memory state; a request routed to another instance cannot verify the challenge and may not observe the originating instance's per-number limit. Deployment topology is not yet specified.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-3-post-otp-password-setup-login.md`
+  summary: Move patient login-failure throttling to shared TTL storage before deploying multiple application instances.
+  evidence: The current 20-failure/15-minute throttle is process-local, so requests routed to different instances do not share the same attempt count; deployment topology is not yet specified.

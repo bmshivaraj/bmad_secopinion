@@ -3,6 +3,7 @@ import { DomainError } from "../../../shared/api-envelope";
 export interface Patient {
   id: string;
   mobileNumber: string;
+  username: string | null;
   passwordHash: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -10,6 +11,34 @@ export interface Patient {
 
 export class InvalidRequestError extends DomainError {
   readonly code = "VALIDATION_ERROR";
+}
+
+export class PasswordPolicyError extends DomainError {
+  readonly code = "PASSWORD_POLICY_ERROR";
+  constructor() {
+    super("Password must be 8-1024 characters and include uppercase, lowercase, and a number.");
+  }
+}
+
+export class PasswordSetupAuthorizationError extends DomainError {
+  readonly code = "PASSWORD_SETUP_UNAUTHORIZED";
+  constructor() {
+    super("Password setup authorization is invalid, expired, or already used.");
+  }
+}
+
+export class UsernameAlreadyTakenError extends DomainError {
+  readonly code = "USERNAME_ALREADY_TAKEN";
+  constructor() {
+    super("That username is already taken.");
+  }
+}
+
+export class InvalidCredentialsError extends DomainError {
+  readonly code = "INVALID_CREDENTIALS";
+  constructor() {
+    super("Invalid username or password.");
+  }
 }
 
 export class MobileAlreadyRegisteredError extends DomainError {

@@ -288,6 +288,98 @@ a {
   text-underline-offset: 3px;
 }
 
+.doctor-form-wrap {
+  width: min(100%, 520px);
+}
+
+.doctor-form-wrap .auth-form-wrap h2 {
+  font-size: 34px;
+}
+
+.doctor-step {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.doctor-verification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.auth-secondary {
+  padding: 7px 0;
+  border: 0;
+  background: transparent;
+  color: var(--green);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-secondary:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.doctor-specialties {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0;
+  border: 0;
+}
+
+.doctor-specialties legend {
+  margin-bottom: 9px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.doctor-specialty-option {
+  display: flex;
+  min-width: 0;
+  min-height: 46px;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #fff;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.doctor-specialty-option input {
+  width: 16px;
+  min-height: 16px;
+  flex: 0 0 16px;
+  margin: 0;
+  accent-color: var(--green);
+}
+
+.doctor-specialty-option:has(input:checked) {
+  border-color: var(--green);
+  background: #edf6ef;
+}
+
+.doctor-upload input {
+  min-height: auto;
+  padding: 12px;
+  font-size: 13px;
+}
+
+@media (max-width: 420px) {
+  .doctor-specialties {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 760px) {
   .auth-shell {
     grid-template-columns: 1fr;

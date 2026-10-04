@@ -54,3 +54,24 @@ export function verifyPatientPasswordSetupToken(token: string): { patientId: str
   }
   return { patientId: payload.patientId };
 }
+
+const DOCTOR_REGISTRATION_PURPOSE = "doctor-registration";
+
+export function signDoctorRegistrationToken(
+  mobileNumber: string,
+  expiresIn: jwt.SignOptions["expiresIn"] = "15m",
+): string {
+  return jwt.sign({ mobileNumber, purpose: DOCTOR_REGISTRATION_PURPOSE }, getJwtSecret(), { expiresIn });
+}
+
+export function verifyDoctorRegistrationToken(token: string): { mobileNumber: string } {
+  const payload = jwt.verify(token, getJwtSecret());
+  if (
+    typeof payload === "string"
+    || typeof payload.mobileNumber !== "string"
+    || payload.purpose !== DOCTOR_REGISTRATION_PURPOSE
+  ) {
+    throw new Error("Invalid doctor registration token");
+  }
+  return { mobileNumber: payload.mobileNumber };
+}

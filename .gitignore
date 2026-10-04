@@ -9,6 +9,9 @@ out/
 .env
 .env*.local
 
+# Private local credential uploads
+.data/
+
 # Prisma generated client (regenerated via `npm run prisma:generate`)
 src/generated/
 

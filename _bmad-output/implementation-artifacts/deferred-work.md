@@ -29,3 +29,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-4-guardian-registration-for-minor-patient.md`
   summary: Decide whether guardian authority attestations require timestamped/versioned audit evidence before wider rollout.
   evidence: v1 now requires the attestation and persists guardian-registration status, but the PRD does not specify attestation text retention, timestamp, or versioning requirements.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-doctor-registration-credentials-specialties.md`
+  summary: Verify the Doctor registration migration and credential persistence against PostgreSQL once valid credentials or a local database are available.
+  evidence: Prisma schema/client validation passed, but migration application returned `P1000`, and Docker Desktop is unavailable; the production repository write has not been exercised against a live database.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-1-doctor-registration-credentials-specialties.md`
+  summary: Move Doctor OTP challenges, request limits, and login-failure throttles to shared TTL storage before running multiple app instances.
+  evidence: These controls remain process-local under the current single-replica v1 assumption, so restarts can lose state and multiple replicas can bypass shared enforcement.

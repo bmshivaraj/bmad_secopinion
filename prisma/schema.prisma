@@ -16,6 +16,14 @@ enum GuardianRelationship {
   @@map("guardian_relationship")
 }
 
+enum DoctorVerificationStatus {
+  Pending
+  Verified
+  Rejected
+
+  @@map("doctor_verification_status")
+}
+
 // Admin-extensible reference table (AD-15). Doctor.specialties (added in a later story)
 // will be a many-to-many join against this table.
 model Specialty {
@@ -24,8 +32,47 @@ model Specialty {
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+  doctors   DoctorSpecialty[]
 
   @@map("specialties")
+}
+
+model Doctor {
+  id                 String                   @id @default(uuid())
+  mobileNumber       String                   @unique @map("mobile_number")
+  fullName           String                   @map("full_name")
+  username           String                   @unique
+  passwordHash       String                   @map("password_hash")
+  verificationStatus DoctorVerificationStatus @default(Pending) @map("verification_status")
+  specialties        DoctorSpecialty[]
+  credentials        DoctorCredential[]
+  createdAt          DateTime                 @default(now()) @map("created_at")
+  updatedAt          DateTime                 @updatedAt @map("updated_at")
+
+  @@map("doctors")
+}
+
+model DoctorSpecialty {
+  doctorId   String    @map("doctor_id")
+  specialtyId String   @map("specialty_id")
+  doctor     Doctor    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  specialty  Specialty @relation(fields: [specialtyId], references: [id], onDelete: Restrict)
+
+  @@id([doctorId, specialtyId])
+  @@map("doctor_specialties")
+}
+
+model DoctorCredential {
+  id               String   @id @default(uuid())
+  doctorId         String   @map("doctor_id")
+  fileName         String   @map("file_name")
+  contentType      String   @map("content_type")
+  sizeBytes        Int      @map("size_bytes")
+  storageKey       String   @unique @map("storage_key")
+  doctor           Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@map("doctor_credentials")
 }
 
 // Single Admin-owned settings record (AD-16): Case fees + Platform Fee percentage.

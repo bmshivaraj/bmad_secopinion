@@ -32,3 +32,16 @@ model PlatformSettings {
 
   @@map("platform_settings")
 }
+
+// Patients module's own table (AD-2). mobileNumber is unique at the DB level
+// as defense in depth alongside the application-level duplicate check.
+// passwordHash stays null until Story 1.3's post-OTP password setup.
+model Patient {
+  id           String   @id @default(uuid())
+  mobileNumber String   @unique @map("mobile_number")
+  passwordHash String?  @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("patients")
+}

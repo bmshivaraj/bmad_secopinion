@@ -13,3 +13,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-1-1-project-foundation-dev-environment-setup.md`
   summary: Add a root README.md walking a new contributor through docker-compose up, migrate, and seed.
   evidence: `.env.example` documents required variables but nothing narrates the end-to-end setup flow. Not in the human-approved Story 1.1 task list.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-1-2-mobile-otp-registration.md`
+  summary: Replace process-local OTP challenge and registration rate-limit state with shared TTL storage before deploying multiple application instances.
+  evidence: The current approved v1 uses in-memory state; a request routed to another instance cannot verify the challenge and may not observe the originating instance's per-number limit. Deployment topology is not yet specified.

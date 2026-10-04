@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "../generated/prisma/client.js";
+import { PrismaClient } from "../generated/prisma/client";
 
 // Shared Prisma Client singleton (Prisma v7 requires an explicit driver adapter).
 // Each module's repository.ts imports this rather than constructing its own client.

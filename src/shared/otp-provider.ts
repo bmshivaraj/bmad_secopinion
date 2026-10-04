@@ -25,8 +25,20 @@ const FIXED_OTP_CODE = "123456";
  */
 export class MockOtpProvider implements OtpProvider {
   private readonly issuedOtps = new Map<string, IssuedOtp>();
+  private sendsSinceCleanup = 0;
 
   async sendOtp(mobileNumber: string): Promise<{ otpId: string; expiresAt: Date }> {
+    this.sendsSinceCleanup += 1;
+    if (this.sendsSinceCleanup >= 100) {
+      const now = Date.now();
+      for (const [issuedOtpId, issuedOtp] of this.issuedOtps) {
+        if (issuedOtp.expiresAt.getTime() <= now) {
+          this.issuedOtps.delete(issuedOtpId);
+        }
+      }
+      this.sendsSinceCleanup = 0;
+    }
+
     const otpId = randomUUID();
     const expiresAt = new Date(Date.now() + OTP_TTL_MS);
     this.issuedOtps.set(otpId, { mobileNumber, code: FIXED_OTP_CODE, expiresAt });
@@ -54,3 +66,7 @@ export class MockOtpProvider implements OtpProvider {
     return matches;
   }
 }
+
+// Module-level singleton so sendOtp/verifyOtp share state across requests
+// (mirrors src/shared/prisma-client.ts's singleton pattern).
+export const otpProvider: OtpProvider = new MockOtpProvider();

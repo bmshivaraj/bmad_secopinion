@@ -1,7 +1,12 @@
 // Doctors module route-handler logic; HTTP concerns stay at this boundary.
 import { NextResponse } from "next/server";
 import { DomainError, fail } from "../../../shared/api-envelope";
-import { InvalidRequestError, SessionAuthorizationError, type CredentialUpload } from "../domain";
+import {
+	InvalidRequestError,
+	InvalidUpiIdError,
+	SessionAuthorizationError,
+	type CredentialUpload,
+} from "../domain";
 
 const MOBILE_NUMBER_PATTERN = /^\+?[0-9]{10,15}$/;
 
@@ -67,6 +72,7 @@ export async function parseDoctorApplicationRequest(request: Request): Promise<{
 	fullName: string;
 	username: string;
 	password: string;
+	upiId?: string;
 	specialtyIds: string[];
 	credentials: CredentialUpload[];
 }> {
@@ -79,9 +85,11 @@ export async function parseDoctorApplicationRequest(request: Request): Promise<{
 	const fullName = formData.get("fullName");
 	const username = formData.get("username");
 	const password = formData.get("password");
+	const upiId = formData.get("upiId");
 	if (typeof fullName !== "string" || typeof username !== "string" || typeof password !== "string") {
 		throw new InvalidRequestError("fullName, username, and password are required.");
 	}
+	if (upiId !== null && typeof upiId !== "string") throw new InvalidUpiIdError();
 	const specialtyIds = formData.getAll("specialtyIds").map((value) => {
 		if (typeof value !== "string") throw new InvalidRequestError("specialtyIds must be text values.");
 		return value;
@@ -104,7 +112,13 @@ export async function parseDoctorApplicationRequest(request: Request): Promise<{
 			bytes: new Uint8Array(await value.arrayBuffer()),
 		});
 	}
-	return { fullName, username, password, specialtyIds, credentials };
+	return { fullName, username, password, ...(typeof upiId === "string" ? { upiId } : {}), specialtyIds, credentials };
+}
+
+export async function parseDoctorPayoutUpdateRequest(request: Request): Promise<{ upiId: string }> {
+	const body = await parseJsonBody(request);
+	if (typeof body.upiId !== "string") throw new InvalidUpiIdError();
+	return { upiId: body.upiId };
 }
 
 export async function parseDoctorLoginRequest(request: Request): Promise<DoctorLoginRequest> {
@@ -146,6 +160,9 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	CREDENTIAL_ACCESS_DENIED: 403,
 	CREDENTIAL_NOT_FOUND: 404,
 	SESSION_UNAUTHORIZED: 401,
+	INVALID_UPI_ID: 400,
+	DOCTOR_PAYOUT_ACCESS_DENIED: 403,
+	DOCTOR_PAYOUT_PROFILE_NOT_FOUND: 404,
 };
 
 export function toErrorResponse(error: unknown): NextResponse {

@@ -24,12 +24,13 @@ export interface DoctorAccount {
 	fullName: string;
 	username: string;
 	passwordHash: string;
+	upiId: string | null;
 	verificationStatus: DoctorVerificationStatus;
 	createdAt: Date;
 	updatedAt: Date;
 }
 
-export type DoctorSummary = Omit<DoctorAccount, "passwordHash">;
+export type DoctorSummary = Omit<DoctorAccount, "passwordHash" | "upiId">;
 
 export interface DoctorApplication extends DoctorAccount {
 	specialties: SpecialtySummary[];
@@ -44,6 +45,37 @@ export interface CredentialUpload {
 
 export class InvalidRequestError extends DomainError {
 	readonly code = "VALIDATION_ERROR";
+}
+
+export class InvalidUpiIdError extends DomainError {
+	readonly code = "INVALID_UPI_ID";
+
+	constructor() {
+		super("Enter a UPI ID in local-part@handle format.");
+	}
+}
+
+export class DoctorPayoutAccessDeniedError extends DomainError {
+	readonly code = "DOCTOR_PAYOUT_ACCESS_DENIED";
+
+	constructor() {
+		super("A Doctor session is required to access payout details.");
+	}
+}
+
+export class DoctorPayoutProfileNotFoundError extends DomainError {
+	readonly code = "DOCTOR_PAYOUT_PROFILE_NOT_FOUND";
+
+	constructor() {
+		super("The Doctor payout profile was not found.");
+	}
+}
+
+export const MAX_UPI_ID_LENGTH = 255;
+
+export function isValidUpiId(upiId: string): boolean {
+	return upiId.length <= MAX_UPI_ID_LENGTH
+		&& /^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*@[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*$/.test(upiId);
 }
 
 export class MobileAlreadyRegisteredError extends DomainError {

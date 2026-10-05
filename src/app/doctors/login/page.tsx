@@ -61,7 +61,7 @@ export default function DoctorLoginPage() {
           <p className="auth-eyebrow">Doctor account</p>
           <h2>Welcome back</h2>
           <p className="auth-intro">Sign in with your Doctor username and password.</p>
-          {notice && <p className="auth-success" role="status">{notice}</p>}
+          {notice && <p className="auth-success" role="status">{notice} <Link href="/doctors/profile">Manage payout details</Link></p>}
           <form className="auth-form" onSubmit={handleSubmit}>
             <div className="field-group">
               <label htmlFor="username">Username</label>

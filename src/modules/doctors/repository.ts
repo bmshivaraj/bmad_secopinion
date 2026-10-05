@@ -23,6 +23,7 @@ function mapApplication(record: {
 	fullName: string;
 	username: string;
 	passwordHash: string;
+	upiId: string | null;
 	verificationStatus: DoctorVerificationStatus;
 	createdAt: Date;
 	updatedAt: Date;
@@ -52,6 +53,16 @@ export const doctorsRepository = {
 		return record ? mapAccount(record) : null;
 	},
 
+	async findPayoutProfile(doctorId: string): Promise<{ upiId: string | null } | null> {
+		return prisma.doctor.findUnique({ where: { id: doctorId }, select: { upiId: true } });
+	},
+
+	async updateUpiId(doctorId: string, upiId: string): Promise<{ upiId: string | null } | null> {
+		const updated = await prisma.doctor.updateMany({ where: { id: doctorId }, data: { upiId } });
+		if (updated.count === 0) return null;
+		return prisma.doctor.findUnique({ where: { id: doctorId }, select: { upiId: true } });
+	},
+
 	async findActiveSpecialties(specialtyIds: string[]): Promise<SpecialtySummary[]> {
 		return prisma.specialty.findMany({
 			where: { id: { in: specialtyIds }, active: true },
@@ -73,6 +84,7 @@ export const doctorsRepository = {
 		fullName: string;
 		username: string;
 		passwordHash: string;
+		upiId: string | null;
 		specialtyIds: string[];
 		credentials: Omit<DoctorCredentialRecord, "id" | "doctorId" | "createdAt">[];
 	}): Promise<DoctorApplication> {
@@ -82,6 +94,7 @@ export const doctorsRepository = {
 				fullName: input.fullName,
 				username: input.username,
 				passwordHash: input.passwordHash,
+				upiId: input.upiId,
 				verificationStatus: "Pending",
 				specialties: {
 					create: input.specialtyIds.map((specialtyId) => ({ specialty: { connect: { id: specialtyId } } })),

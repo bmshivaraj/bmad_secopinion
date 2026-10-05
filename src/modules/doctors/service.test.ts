@@ -19,12 +19,13 @@ process.env.JWT_SECRET ??= "doctor-auth-test-secret";
 
 const { createDoctorsService } = await import("./service");
 const { doctorsRepository } = await import("./repository");
-const { verifyAuthToken, verifyDoctorRegistrationToken } = await import("../../shared/auth-context");
+const { signAuthToken, verifyAuthToken, verifyDoctorRegistrationToken } = await import("../../shared/auth-context");
 const { LocalDiskStorageProvider } = await import("../../shared/storage-provider");
 const { storageProvider } = await import("../../shared/storage-provider");
 const { POST: startRegistrationPost } = await import("../../app/api/doctors/register/start/route");
 const { POST: verifyRegistrationPost } = await import("../../app/api/doctors/register/verify/route");
 const { POST: submitApplicationPost } = await import("../../app/api/doctors/register/submit/route");
+const { GET: getPayoutProfile, PATCH: patchPayoutProfile } = await import("../../app/api/doctors/profile/upi/route");
 const { parseDoctorApplicationRequest } = await import("./routes");
 
 const DEFAULT_SPECIALTIES: SpecialtySummary[] = [
@@ -54,6 +55,16 @@ function createFixture(options: {
     async findById(doctorId: string): Promise<DoctorAccount | null> {
       return [...applications.values()].find((doctor) => doctor.id === doctorId) ?? null;
     },
+    async findPayoutProfile(doctorId: string): Promise<{ upiId: string | null } | null> {
+      const doctor = applications.get(doctorId);
+      return doctor ? { upiId: doctor.upiId } : null;
+    },
+    async updateUpiId(doctorId: string, upiId: string): Promise<{ upiId: string | null } | null> {
+      const doctor = applications.get(doctorId);
+      if (!doctor) return null;
+      applications.set(doctorId, { ...doctor, upiId, updatedAt: new Date() });
+      return { upiId };
+    },
     async findActiveSpecialties(ids: string[]): Promise<SpecialtySummary[]> {
       return specialties.filter((specialty) => ids.includes(specialty.id));
     },
@@ -65,6 +76,7 @@ function createFixture(options: {
       fullName: string;
       username: string;
       passwordHash: string;
+      upiId: string | null;
       specialtyIds: string[];
       credentials: Omit<DoctorCredentialRecord, "id" | "doctorId" | "createdAt">[];
     }): Promise<DoctorApplication> {
@@ -76,6 +88,7 @@ function createFixture(options: {
         fullName: input.fullName,
         username: input.username,
         passwordHash: input.passwordHash,
+        upiId: input.upiId,
         verificationStatus: "Pending" satisfies DoctorVerificationStatus,
         createdAt: now,
         updatedAt: now,
@@ -410,10 +423,13 @@ test("Doctor submission route creates a Doctor session and does not return stora
     findByUsername: doctorsRepository.findByUsername,
     findActiveSpecialties: doctorsRepository.findActiveSpecialties,
     createApplication: doctorsRepository.createApplication,
+    findPayoutProfile: doctorsRepository.findPayoutProfile,
+    updateUpiId: doctorsRepository.updateUpiId,
   };
   const originalStorageSave = storageProvider.save;
   const mobileNumber = uniqueMobileNumber();
   const doctorId = randomUUID();
+  let submittedUpiId: string | null = null;
   doctorsRepository.findByMobileNumber = async () => null;
   doctorsRepository.findByUsername = async () => null;
   doctorsRepository.findActiveSpecialties = async (specialtyIds) => (
@@ -421,6 +437,7 @@ test("Doctor submission route creates a Doctor session and does not return stora
   );
   storageProvider.save = async () => ({ storageKey: randomUUID() });
   doctorsRepository.createApplication = async (input) => {
+    submittedUpiId = input.upiId;
     const now = new Date();
     return {
       id: doctorId,
@@ -428,6 +445,7 @@ test("Doctor submission route creates a Doctor session and does not return stora
       fullName: input.fullName,
       username: input.username,
       passwordHash: input.passwordHash,
+      upiId: input.upiId,
       verificationStatus: "Pending",
       createdAt: now,
       updatedAt: now,
@@ -470,6 +488,7 @@ test("Doctor submission route creates a Doctor session and does not return stora
     form.set("fullName", "Dr. Route Doctor");
     form.set("username", "route_doctor");
     form.set("password", "StrongPass1");
+    form.set("upiId", "route@okaxis");
     form.append("specialtyIds", DEFAULT_SPECIALTIES[0].id);
     form.append("credentials", new File(["%PDF-1.7 credential"], "degree.pdf", { type: "application/pdf" }));
 
@@ -489,8 +508,144 @@ test("Doctor submission route creates a Doctor session and does not return stora
     assert.equal(body.data.doctorId, doctorId);
     assert.equal(body.data.verificationStatus, "Pending");
     assert.equal("storageKey" in body.data.credentials[0], false);
+    assert.equal(submittedUpiId, "route@okaxis");
+
+    const malformedForm = new FormData();
+    malformedForm.set("fullName", "Dr. Route Doctor");
+    malformedForm.set("username", "route_doctor");
+    malformedForm.set("password", "StrongPass1");
+    malformedForm.set("upiId", " ");
+    malformedForm.append("specialtyIds", DEFAULT_SPECIALTIES[0].id);
+    malformedForm.append("credentials", new File(["%PDF-1.7 credential"], "degree.pdf", { type: "application/pdf" }));
+    const malformedResponse = await submitApplicationPost(new Request("http://localhost/api/doctors/register/submit", {
+      method: "POST",
+      headers: { cookie: registrationCookie },
+      body: malformedForm,
+    }));
+    assert.equal(malformedResponse.status, 400);
+    assert.equal((await malformedResponse.json() as { error: { code: string } }).error.code, "INVALID_UPI_ID");
+    assert.equal(submittedUpiId, "route@okaxis");
   } finally {
     Object.assign(doctorsRepository, originalMethods);
     storageProvider.save = originalStorageSave;
+  }
+});
+
+test("registration accepts an optional UPI ID and stores valid values", async () => {
+  const fixture = createFixture();
+  const applicant = await authorizeApplicant(fixture);
+  const withoutUpiId = await fixture.service.submitApplication(applicant.registrationToken, validInput());
+  assert.equal(fixture.applications.get(withoutUpiId.doctorId)?.upiId, null);
+
+  const secondApplicant = await authorizeApplicant(fixture);
+  const withUpiId = await fixture.service.submitApplication(secondApplicant.registrationToken, {
+    ...validInput(),
+    username: "Asha_Mehta2",
+    upiId: "asha.mehta-1@okaxis",
+  });
+  assert.equal(fixture.applications.get(withUpiId.doctorId)?.upiId, "asha.mehta-1@okaxis");
+});
+
+test("registration rejects malformed UPI IDs without creating an application", async (context) => {
+  for (const upiId of ["", "   ", "@okaxis", "asha.mehta", "asha@@okaxis", "asha.@okaxis", "asha@@okaxis", "asha@bank.", "asha..mehta@okaxis", `${"a".repeat(256)}@okaxis`]) {
+    await context.test(JSON.stringify(upiId), async () => {
+      const fixture = createFixture();
+      const applicant = await authorizeApplicant(fixture);
+      if (upiId === "") {
+        const result = await fixture.service.submitApplication(applicant.registrationToken, { ...validInput(), upiId });
+        assert.equal(fixture.applications.get(result.doctorId)?.upiId, null);
+      } else {
+        await assert.rejects(
+          fixture.service.submitApplication(applicant.registrationToken, { ...validInput(), upiId }),
+          { code: "INVALID_UPI_ID" },
+        );
+        assert.equal(fixture.applications.size, 0);
+      }
+    });
+  }
+});
+
+test("payout profile reads and updates are Doctor-owner scoped", async () => {
+  const fixture = createFixture();
+  const applicant = await authorizeApplicant(fixture);
+  const application = await fixture.service.submitApplication(applicant.registrationToken, validInput());
+  const owner = { userId: application.doctorId, role: "doctor" as const };
+
+  assert.deepEqual(await fixture.service.getOwnPayoutProfile(owner), { upiId: null });
+  assert.deepEqual(await fixture.service.updateOwnPayoutProfile(owner, "asha@okaxis"), { upiId: "asha@okaxis" });
+  assert.deepEqual(await fixture.service.getOwnPayoutProfile(owner), { upiId: "asha@okaxis" });
+  for (const malformedUpiId of ["", "   ", "@okaxis", "asha", "asha@@okaxis", "asha.@okaxis", "asha@bank.", "asha..mehta@okaxis", `${"a".repeat(256)}@okaxis`]) {
+    await assert.rejects(fixture.service.updateOwnPayoutProfile(owner, malformedUpiId), { code: "INVALID_UPI_ID" });
+    assert.deepEqual(await fixture.service.getOwnPayoutProfile(owner), { upiId: "asha@okaxis" });
+  }
+
+  await assert.rejects(
+    fixture.service.getOwnPayoutProfile({ userId: randomUUID(), role: "patient" }),
+    { code: "DOCTOR_PAYOUT_ACCESS_DENIED" },
+  );
+  await assert.rejects(
+    fixture.service.updateOwnPayoutProfile({ userId: randomUUID(), role: "admin" }, "other@okaxis"),
+    { code: "DOCTOR_PAYOUT_ACCESS_DENIED" },
+  );
+  await assert.rejects(
+    fixture.service.getOwnPayoutProfile({ userId: randomUUID(), role: "doctor" }),
+    { code: "DOCTOR_PAYOUT_PROFILE_NOT_FOUND" },
+  );
+});
+
+test("payout profile API authenticates the Doctor session and uses its owner ID", async () => {
+  const originalFind = doctorsRepository.findPayoutProfile;
+  const originalUpdate = doctorsRepository.updateUpiId;
+  const doctorId = randomUUID();
+  let savedUpiId: string | null = null;
+  let updatedDoctorId = "";
+  doctorsRepository.findPayoutProfile = async (id) => id === doctorId ? { upiId: savedUpiId } : null;
+  doctorsRepository.updateUpiId = async (id, upiId) => {
+    updatedDoctorId = id;
+    if (id !== doctorId) return null;
+    savedUpiId = upiId;
+    return { upiId };
+  };
+
+  try {
+    const session = signAuthToken({ userId: doctorId, role: "doctor" });
+    const getRequest = (cookie = `doctor_session=${session}`) => new Request(
+      "http://localhost/api/doctors/profile/upi",
+      { headers: cookie ? { cookie } : undefined },
+    );
+    const initialResponse = await getPayoutProfile(getRequest());
+    assert.equal(initialResponse.status, 200);
+    assert.equal(initialResponse.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual(await initialResponse.json(), { data: { upiId: null }, error: null });
+
+    const updateResponse = await patchPayoutProfile(new Request("http://localhost/api/doctors/profile/upi", {
+      method: "PATCH",
+      headers: { cookie: `doctor_session=${session}`, "content-type": "application/json" },
+      body: JSON.stringify({ doctorId: randomUUID(), upiId: "route@okaxis" }),
+    }));
+    assert.equal(updateResponse.status, 200);
+    assert.equal(updatedDoctorId, doctorId);
+    assert.deepEqual(await updateResponse.json(), { data: { upiId: "route@okaxis" }, error: null });
+
+    const invalidUpdate = await patchPayoutProfile(new Request("http://localhost/api/doctors/profile/upi", {
+      method: "PATCH",
+      headers: { cookie: `doctor_session=${session}`, "content-type": "application/json" },
+      body: JSON.stringify({ upiId: "" }),
+    }));
+    assert.equal(invalidUpdate.status, 400);
+    assert.equal((await invalidUpdate.json() as { error: { code: string } }).error.code, "INVALID_UPI_ID");
+    assert.equal(savedUpiId, "route@okaxis");
+
+    const patientSession = signAuthToken({ userId: randomUUID(), role: "patient" });
+    const forbiddenResponse = await getPayoutProfile(getRequest(`doctor_session=${patientSession}`));
+    assert.equal(forbiddenResponse.status, 403);
+    for (const cookie of ["", "doctor_session=invalid-token"]) {
+      const unauthorizedResponse = await getPayoutProfile(getRequest(cookie));
+      assert.equal(unauthorizedResponse.status, 401);
+      assert.equal((await unauthorizedResponse.json() as { error: { code: string } }).error.code, "SESSION_UNAUTHORIZED");
+    }
+  } finally {
+    doctorsRepository.findPayoutProfile = originalFind;
+    doctorsRepository.updateUpiId = originalUpdate;
   }
 });

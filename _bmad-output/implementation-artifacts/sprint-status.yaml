@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-23-2026 00:00
-last_updated: 10-04-2026 23:11
+last_updated: 10-05-2026 09:50
 project: secopinion
 project_key: NOKEY
 tracking_system: file-system
@@ -42,9 +42,9 @@ development_status:
   1-4-guardian-registration-for-a-minor-patient: review
   epic-1-retrospective: optional
 
-  epic-2: backlog
+  epic-2: in-progress
   2-1-doctor-registration-with-credentials-specialties: review
-  2-2-doctor-upi-payout-details: backlog
+  2-2-doctor-upi-payout-details: review
   2-3-admin-manual-verification-review: backlog
   2-4-admin-manages-specialty-catalog: backlog
   epic-2-retrospective: optional

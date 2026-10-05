@@ -254,6 +254,11 @@ export default function DoctorRegistrationPage() {
                 <input id="password" name="password" type="password" autoComplete="new-password" minLength={8} maxLength={1024} pattern="(?=.*[a-z])(?=.*[A-Z])(?=.*[0-9]).{8,}" required />
                 <span className="field-hint">At least 8 characters, with uppercase, lowercase, and a number.</span>
               </div>
+              <div className="field-group">
+                <label htmlFor="upiId">UPI ID <span className="field-hint">(optional)</span></label>
+                <input id="upiId" name="upiId" type="text" autoComplete="off" maxLength={255} pattern={"[A-Za-z0-9]+(?:[._\\x2D][A-Za-z0-9]+)*@[A-Za-z0-9]+(?:[.\\x2D][A-Za-z0-9]+)*"} title="Use local-part@handle format, such as name@bank" />
+                <span className="field-hint">For payouts, enter an ID in local-part@handle format. You can add it later.</span>
+              </div>
               <fieldset className="doctor-specialties">
                 <legend>Specialties</legend>
                 {specialties.map((specialty) => (

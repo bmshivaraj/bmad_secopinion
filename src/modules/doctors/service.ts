@@ -16,8 +16,12 @@ import type { StorageProvider } from "../../shared/storage-provider";
 import {
 	CredentialAccessDeniedError,
 	CredentialNotFoundError,
+	DoctorPayoutAccessDeniedError,
+	DoctorPayoutProfileNotFoundError,
 	InvalidCredentialsError,
 	InvalidRequestError,
+	InvalidUpiIdError,
+	isValidUpiId,
 	isOtpRequestRateLimited,
 	MobileAlreadyRegisteredError,
 	OtpExpiredError,
@@ -56,6 +60,8 @@ type DoctorsRepository = Pick<
 	| "findByMobileNumber"
 	| "findByUsername"
 	| "findById"
+	| "findPayoutProfile"
+	| "updateUpiId"
 	| "findActiveSpecialties"
 	| "listActiveSpecialties"
 	| "createApplication"
@@ -246,6 +252,7 @@ export function createDoctorsService(
 				fullName: string;
 				username: string;
 				password: string;
+				upiId?: string | null;
 				specialtyIds: string[];
 				credentials: CredentialUpload[];
 			},
@@ -261,6 +268,8 @@ export function createDoctorsService(
 				throw new InvalidRequestError("username must be 3-30 ASCII letters, numbers, or underscores.");
 			}
 			if (!isValidPassword(input.password)) throw new PasswordPolicyError();
+			const upiId = input.upiId === undefined || input.upiId === "" ? null : input.upiId;
+			if (upiId !== null && !isValidUpiId(upiId)) throw new InvalidUpiIdError();
 			if (input.specialtyIds.length === 0 || input.specialtyIds.some((id) => !id.trim())) {
 				throw new InvalidRequestError("Select at least one active specialty.");
 			}
@@ -289,6 +298,7 @@ export function createDoctorsService(
 					fullName,
 					username,
 					passwordHash,
+					upiId,
 					specialtyIds: specialties.map(({ id }) => id),
 					credentials: savedFiles.map(({ storageKey, upload }) => ({
 						fileName: upload.fileName,
@@ -360,6 +370,21 @@ export function createDoctorsService(
 				fileName: credential.fileName,
 				contentType: credential.contentType,
 			};
+		},
+
+		async getOwnPayoutProfile(caller: AuthContext): Promise<{ upiId: string | null }> {
+			if (caller.role !== "doctor") throw new DoctorPayoutAccessDeniedError();
+			const profile = await repository.findPayoutProfile(caller.userId);
+			if (!profile) throw new DoctorPayoutProfileNotFoundError();
+			return profile;
+		},
+
+		async updateOwnPayoutProfile(caller: AuthContext, upiId: string): Promise<{ upiId: string | null }> {
+			if (caller.role !== "doctor") throw new DoctorPayoutAccessDeniedError();
+			if (typeof upiId !== "string" || !isValidUpiId(upiId)) throw new InvalidUpiIdError();
+			const profile = await repository.updateUpiId(caller.userId, upiId);
+			if (!profile) throw new DoctorPayoutProfileNotFoundError();
+			return profile;
 		},
 
 		async getVerifiedDoctor(doctorId: string): Promise<DoctorSummary | null> {

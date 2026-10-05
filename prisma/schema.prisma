@@ -43,6 +43,7 @@ model Doctor {
   fullName           String                   @map("full_name")
   username           String                   @unique
   passwordHash       String                   @map("password_hash")
+  upiId              String?                  @map("upi_id")
   verificationStatus DoctorVerificationStatus @default(Pending) @map("verification_status")
   specialties        DoctorSpecialty[]
   credentials        DoctorCredential[]

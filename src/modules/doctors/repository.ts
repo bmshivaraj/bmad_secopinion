@@ -109,4 +109,26 @@ export const doctorsRepository = {
 	async findCredentialById(credentialId: string): Promise<DoctorCredentialRecord | null> {
 		return prisma.doctorCredential.findUnique({ where: { id: credentialId } });
 	},
+
+	async listPendingApplications(): Promise<DoctorApplication[]> {
+		const records = await prisma.doctor.findMany({
+			where: { verificationStatus: "Pending" },
+			include: applicationInclude,
+			orderBy: { createdAt: "asc" },
+		});
+		return records.map(mapApplication);
+	},
+
+	async updatePendingVerificationStatus(
+		doctorId: string,
+		verificationStatus: Exclude<DoctorVerificationStatus, "Pending">,
+	): Promise<DoctorApplication | null> {
+		const updated = await prisma.doctor.updateMany({
+			where: { id: doctorId, verificationStatus: "Pending" },
+			data: { verificationStatus },
+		});
+		if (updated.count === 0) return null;
+		const record = await prisma.doctor.findUnique({ where: { id: doctorId }, include: applicationInclude });
+		return record ? mapApplication(record) : null;
+	},
 };

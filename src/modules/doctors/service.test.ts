@@ -19,6 +19,7 @@ process.env.JWT_SECRET ??= "doctor-auth-test-secret";
 
 const { createDoctorsService } = await import("./service");
 const { doctorsRepository } = await import("./repository");
+const { prisma } = await import("../../shared/prisma-client");
 const { signAuthToken, verifyAuthToken, verifyDoctorRegistrationToken } = await import("../../shared/auth-context");
 const { LocalDiskStorageProvider } = await import("../../shared/storage-provider");
 const { storageProvider } = await import("../../shared/storage-provider");
@@ -32,6 +33,29 @@ const DEFAULT_SPECIALTIES: SpecialtySummary[] = [
   { id: "specialty-cardiology", name: "Cardiology" },
   { id: "specialty-neurology", name: "Neurology" },
 ];
+
+test("verification status repository update is conditional on Pending state", async () => {
+  const doctorDelegate = prisma.doctor as unknown as {
+    updateMany: (args: unknown) => Promise<{ count: number }>;
+  };
+  const originalUpdateMany = doctorDelegate.updateMany;
+  const doctorId = randomUUID();
+  let updateArgs: unknown;
+  doctorDelegate.updateMany = async (args) => {
+    updateArgs = args;
+    return { count: 0 };
+  };
+
+  try {
+    assert.equal(await doctorsRepository.updatePendingVerificationStatus(doctorId, "Verified"), null);
+    assert.deepEqual(updateArgs, {
+      where: { id: doctorId, verificationStatus: "Pending" },
+      data: { verificationStatus: "Verified" },
+    });
+  } finally {
+    doctorDelegate.updateMany = originalUpdateMany;
+  }
+});
 
 function createFixture(options: {
   specialties?: SpecialtySummary[];
@@ -106,6 +130,19 @@ function createFixture(options: {
     async findCredentialById(credentialId: string): Promise<DoctorCredentialRecord | null> {
       return [...applications.values()].flatMap(({ credentials }) => credentials)
         .find(({ id }) => id === credentialId) ?? null;
+    },
+    async listPendingApplications(): Promise<DoctorApplication[]> {
+      return [...applications.values()].filter(({ verificationStatus }) => verificationStatus === "Pending");
+    },
+    async updatePendingVerificationStatus(
+      doctorId: string,
+      verificationStatus: Exclude<DoctorVerificationStatus, "Pending">,
+    ): Promise<DoctorApplication | null> {
+      const application = applications.get(doctorId);
+      if (!application || application.verificationStatus !== "Pending") return null;
+      const updated = { ...application, verificationStatus, updatedAt: new Date() };
+      applications.set(doctorId, updated);
+      return updated;
     },
   };
 
@@ -648,4 +685,56 @@ test("payout profile API authenticates the Doctor session and uses its owner ID"
     doctorsRepository.findPayoutProfile = originalFind;
     doctorsRepository.updateUpiId = originalUpdate;
   }
+});
+
+test("Admin review lists only Pending applications and allows one final decision", async () => {
+  const fixture = createFixture();
+  const applicant = await authorizeApplicant(fixture);
+  const application = await fixture.service.submitApplication(applicant.registrationToken, validInput());
+  const admin = { userId: randomUUID(), role: "admin" as const };
+
+  assert.deepEqual(await fixture.service.listPendingApplications(admin), [{
+    doctorId: application.doctorId,
+    fullName: "Dr. Asha Mehta",
+    username: "asha_mehta1",
+    verificationStatus: "Pending",
+    specialties: DEFAULT_SPECIALTIES,
+    credentials: application.credentials.map(({ id, fileName, contentType, sizeBytes, createdAt }) => ({
+      id, fileName, contentType, sizeBytes, createdAt,
+    })),
+  }]);
+  await assert.rejects(
+    fixture.service.listPendingApplications({ userId: randomUUID(), role: "doctor" }),
+    { code: "DOCTOR_VERIFICATION_ACCESS_DENIED" },
+  );
+  await assert.rejects(
+    fixture.service.setVerificationStatus({ userId: randomUUID(), role: "patient" }, application.doctorId, "Verified"),
+    { code: "DOCTOR_VERIFICATION_ACCESS_DENIED" },
+  );
+
+  const verified = await fixture.service.setVerificationStatus(admin, application.doctorId, "Verified");
+  assert.equal(verified.verificationStatus, "Verified");
+  assert.equal(await fixture.service.getVerifiedDoctor(application.doctorId) !== null, true);
+  assert.deepEqual(await fixture.service.listPendingApplications(admin), []);
+  await assert.rejects(
+    fixture.service.setVerificationStatus(admin, application.doctorId, "Rejected"),
+    { code: "DOCTOR_VERIFICATION_CONFLICT" },
+  );
+  assert.equal(fixture.applications.get(application.doctorId)?.verificationStatus, "Verified");
+});
+
+test("rejected Doctors remain ineligible and cannot receive a second decision", async () => {
+  const fixture = createFixture();
+  const applicant = await authorizeApplicant(fixture);
+  const application = await fixture.service.submitApplication(applicant.registrationToken, validInput());
+  const admin = { userId: randomUUID(), role: "admin" as const };
+
+  await fixture.service.setVerificationStatus(admin, application.doctorId, "Rejected");
+  assert.equal(await fixture.service.getVerifiedDoctor(application.doctorId), null);
+  assert.equal((await fixture.service.login("asha_mehta1", "StrongPass1")).verificationStatus, "Rejected");
+  await assert.rejects(
+    fixture.service.setVerificationStatus(admin, application.doctorId, "Verified"),
+    { code: "DOCTOR_VERIFICATION_CONFLICT" },
+  );
+  assert.equal(fixture.applications.get(application.doctorId)?.verificationStatus, "Rejected");
 });

@@ -16,8 +16,11 @@ import type { StorageProvider } from "../../shared/storage-provider";
 import {
 	CredentialAccessDeniedError,
 	CredentialNotFoundError,
+	DoctorNotFoundError,
 	DoctorPayoutAccessDeniedError,
 	DoctorPayoutProfileNotFoundError,
+	DoctorVerificationAccessDeniedError,
+	DoctorVerificationConflictError,
 	InvalidCredentialsError,
 	InvalidRequestError,
 	InvalidUpiIdError,
@@ -66,6 +69,8 @@ type DoctorsRepository = Pick<
 	| "listActiveSpecialties"
 	| "createApplication"
 	| "findCredentialById"
+	| "listPendingApplications"
+	| "updatePendingVerificationStatus"
 >;
 
 function normalizeMobileNumber(mobileNumber: string): string {
@@ -370,6 +375,24 @@ export function createDoctorsService(
 				fileName: credential.fileName,
 				contentType: credential.contentType,
 			};
+		},
+
+		async listPendingApplications(caller: AuthContext) {
+			if (caller.role !== "admin") throw new DoctorVerificationAccessDeniedError();
+			const applications = await repository.listPendingApplications();
+			return applications.map(publicApplication);
+		},
+
+		async setVerificationStatus(
+			caller: AuthContext,
+			doctorId: string,
+			verificationStatus: Exclude<DoctorAccount["verificationStatus"], "Pending">,
+		) {
+			if (caller.role !== "admin") throw new DoctorVerificationAccessDeniedError();
+			const application = await repository.updatePendingVerificationStatus(doctorId, verificationStatus);
+			if (application) return publicApplication(application);
+			if (!await repository.findById(doctorId)) throw new DoctorNotFoundError();
+			throw new DoctorVerificationConflictError();
 		},
 
 		async getOwnPayoutProfile(caller: AuthContext): Promise<{ upiId: string | null }> {

@@ -76,6 +76,16 @@ model DoctorCredential {
   @@map("doctor_credentials")
 }
 
+model AdminAccount {
+  id           String   @id
+  username     String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("admin_accounts")
+}
+
 // Single Admin-owned settings record (AD-16): Case fees + Platform Fee percentage.
 // A settings change applies prospectively only -- see AD-16.
 model PlatformSettings {

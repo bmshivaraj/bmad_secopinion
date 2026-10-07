@@ -158,6 +158,30 @@ export class CredentialNotFoundError extends DomainError {
 	}
 }
 
+export class DoctorVerificationAccessDeniedError extends DomainError {
+	readonly code = "DOCTOR_VERIFICATION_ACCESS_DENIED";
+
+	constructor() {
+		super("An Admin session is required to review Doctor applications.");
+	}
+}
+
+export class DoctorNotFoundError extends DomainError {
+	readonly code = "DOCTOR_NOT_FOUND";
+
+	constructor() {
+		super("The Doctor application was not found.");
+	}
+}
+
+export class DoctorVerificationConflictError extends DomainError {
+	readonly code = "DOCTOR_VERIFICATION_CONFLICT";
+
+	constructor() {
+		super("Only Pending Doctor applications can receive a verification decision.");
+	}
+}
+
 export class SessionAuthorizationError extends DomainError {
 	readonly code = "SESSION_UNAUTHORIZED";
 

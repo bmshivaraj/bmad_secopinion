@@ -57,6 +57,44 @@ test("verification status repository update is conditional on Pending state", as
   }
 });
 
+test("Specialty repository creates active rows and lists only active names alphabetically", async () => {
+  const specialtyDelegate = prisma.specialty as unknown as {
+    create: (args: unknown) => Promise<SpecialtySummary>;
+    findMany: (args: unknown) => Promise<SpecialtySummary[]>;
+  };
+  const originals = { create: specialtyDelegate.create, findMany: specialtyDelegate.findMany };
+  let createArgs: unknown;
+  let listArgs: unknown;
+  specialtyDelegate.create = async (args) => {
+    createArgs = args;
+    return { id: "specialty-new", name: "Rheumatology" };
+  };
+  specialtyDelegate.findMany = async (args) => {
+    listArgs = args;
+    return [{ id: "specialty-cardio", name: "Cardiology" }, { id: "specialty-new", name: "Rheumatology" }];
+  };
+
+  try {
+    assert.deepEqual(await doctorsRepository.createSpecialty({
+      name: "Rheumatology",
+      normalizedName: "rheumatology",
+    }), { id: "specialty-new", name: "Rheumatology" });
+    assert.deepEqual(createArgs, {
+      data: { name: "Rheumatology", normalizedName: "rheumatology", active: true },
+      select: { id: true, name: true },
+    });
+    await doctorsRepository.listActiveSpecialties();
+    assert.deepEqual(listArgs, {
+      where: { active: true },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+  } finally {
+    specialtyDelegate.create = originals.create;
+    specialtyDelegate.findMany = originals.findMany;
+  }
+});
+
 function createFixture(options: {
   specialties?: SpecialtySummary[];
   expiresAt?: Date;
@@ -64,7 +102,8 @@ function createFixture(options: {
 } = {}) {
   const applications = new Map<string, DoctorApplication>();
   const storedFiles = new Map<string, Uint8Array>();
-  const specialties = options.specialties ?? DEFAULT_SPECIALTIES;
+  const specialties = options.specialties?.map((specialty) => ({ ...specialty }))
+    ?? DEFAULT_SPECIALTIES.map((specialty) => ({ ...specialty }));
   const expiration = options.expiresAt ?? new Date(Date.now() + 60_000);
   let otpCount = 0;
   let verifyCount = 0;
@@ -94,6 +133,15 @@ function createFixture(options: {
     },
     async listActiveSpecialties(): Promise<SpecialtySummary[]> {
       return specialties;
+    },
+    async createSpecialty(input: { name: string; normalizedName: string }): Promise<SpecialtySummary> {
+      if (specialties.some(({ name }) => name.toLowerCase() === input.normalizedName)) {
+        throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+      }
+      const specialty = { id: randomUUID(), name: input.name };
+      specialties.push(specialty);
+      specialties.sort((left, right) => left.name.localeCompare(right.name));
+      return specialty;
     },
     async createApplication(input: {
       mobileNumber: string;
@@ -179,6 +227,30 @@ function createFixture(options: {
     get verifyCount() { return verifyCount; },
   };
 }
+
+test("Specialty additions are normalized, unique, immediately listed, and leave existing Doctor assignments unchanged", async () => {
+  const fixture = createFixture();
+  const applicant = await authorizeApplicant(fixture);
+  const application = await fixture.service.submitApplication(applicant.registrationToken, validInput());
+  const existingSpecialties = fixture.applications.get(application.doctorId)?.specialties;
+
+  const added = await fixture.service.createSpecialty("  Rheumatology  ");
+  assert.equal(added.name, "Rheumatology");
+  assert.deepEqual((await fixture.service.listActiveSpecialties()).map(({ name }) => name), [
+    "Cardiology",
+    "Neurology",
+    "Rheumatology",
+  ]);
+  assert.deepEqual(fixture.applications.get(application.doctorId)?.specialties, existingSpecialties);
+
+  await assert.rejects(fixture.service.createSpecialty("rHeUmAtOlOgY"), {
+    code: "SPECIALTY_NAME_ALREADY_EXISTS",
+  });
+  for (const invalidName of ["", "   ", "x".repeat(121)]) {
+    await assert.rejects(fixture.service.createSpecialty(invalidName), { code: "VALIDATION_ERROR" });
+  }
+  assert.equal((await fixture.service.listActiveSpecialties()).length, 3);
+});
 
 let mobileSequence = 1;
 

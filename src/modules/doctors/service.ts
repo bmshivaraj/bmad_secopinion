@@ -33,6 +33,7 @@ import {
 	recordOtpRequest,
 	RegistrationAuthorizationError,
 	RegistrationStartUnavailableError,
+	SpecialtyNameAlreadyExistsError,
 	UsernameAlreadyTakenError,
 	type CredentialUpload,
 	type DoctorAccount,
@@ -67,6 +68,7 @@ type DoctorsRepository = Pick<
 	| "updateUpiId"
 	| "findActiveSpecialties"
 	| "listActiveSpecialties"
+	| "createSpecialty"
 	| "createApplication"
 	| "findCredentialById"
 	| "listPendingApplications"
@@ -241,6 +243,23 @@ export function createDoctorsService(
 
 		async listActiveSpecialties(): Promise<SpecialtySummary[]> {
 			return repository.listActiveSpecialties();
+		},
+
+		async createSpecialty(name: string): Promise<SpecialtySummary> {
+			if (typeof name !== "string") throw new InvalidRequestError("name must be a string.");
+			const trimmedName = name.trim();
+			if (!trimmedName || trimmedName.length > 120) {
+				throw new InvalidRequestError("name must be 1-120 characters.");
+			}
+			try {
+				return await repository.createSpecialty({
+					name: trimmedName,
+					normalizedName: trimmedName.toLowerCase(),
+				});
+			} catch (error) {
+				if (isUniqueConstraintViolation(error)) throw new SpecialtyNameAlreadyExistsError();
+				throw error;
+			}
 		},
 
 		assertRegistrationAuthorization(registrationToken: string): void {

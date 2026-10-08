@@ -80,8 +80,8 @@ async function main() {
   for (const name of DEFAULT_SPECIALTIES) {
     await prisma.specialty.upsert({
       where: { name },
-      update: {},
-      create: { name },
+      update: { normalizedName: name.toLowerCase() },
+      create: { name, normalizedName: name.toLowerCase() },
     });
   }
 

@@ -41,3 +41,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-2-doctor-upi-payout-details.md`
   summary: Apply the Doctor UPI migration and verify payout ID create/read/update persistence against PostgreSQL.
   evidence: Prisma validation and client generation pass, but migration application and real repository persistence could not be verified because PostgreSQL rejected the configured credentials with `P1000`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-4-admin-manages-specialty-catalog.md`
+  summary: Apply the Specialty normalized-name migration against PostgreSQL and verify backfill, Doctor-Specialty relationships, and case-only duplicate rejection.
+  evidence: The migration could not be applied because PostgreSQL rejected the configured credentials with `P1000`; the shipped 15 default names are unique after normalization, but deployed database contents and data relationships could not be inspected.

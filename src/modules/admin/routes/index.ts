@@ -34,6 +34,12 @@ export async function parseAdminDecisionRequest(request: Request): Promise<{ ver
 	return { verificationStatus: body.verificationStatus };
 }
 
+export async function parseAdminSpecialtyRequest(request: Request): Promise<{ name: string }> {
+	const body = await parseJsonBody(request);
+	if (typeof body.name !== "string") throw new InvalidAdminRequestError("name must be a string.");
+	return { name: body.name };
+}
+
 async function parseJsonBody(request: Request): Promise<Record<string, unknown>> {
 	let body: unknown;
 	try {
@@ -69,6 +75,7 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	DOCTOR_VERIFICATION_ACCESS_DENIED: 403,
 	DOCTOR_NOT_FOUND: 404,
 	DOCTOR_VERIFICATION_CONFLICT: 409,
+	SPECIALTY_NAME_ALREADY_EXISTS: 409,
 };
 
 export function toAdminErrorResponse(error: unknown): NextResponse {

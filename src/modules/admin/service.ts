@@ -10,7 +10,10 @@ const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const DUMMY_PASSWORD_HASH = argon2.hash("secopinion-invalid-admin-dummy", { type: argon2.argon2id });
 
 type AdminRepository = Pick<typeof adminRepository, "findByUsername">;
-type ReviewDoctorsService = Pick<typeof doctorsService, "listPendingApplications" | "setVerificationStatus">;
+type ReviewDoctorsService = Pick<
+	typeof doctorsService,
+	"listPendingApplications" | "setVerificationStatus" | "listActiveSpecialties" | "createSpecialty"
+>;
 
 export function createAdminService(
 	repository: AdminRepository = adminRepository,
@@ -82,6 +85,16 @@ export function createAdminService(
 					href: `/api/doctors/credentials/${encodeURIComponent(credential.id)}`,
 				})),
 			}));
+		},
+
+		async listSpecialties(caller: AuthContext) {
+			assertAdmin(caller);
+			return doctors.listActiveSpecialties();
+		},
+
+		async addSpecialty(caller: AuthContext, name: string) {
+			assertAdmin(caller);
+			return doctors.createSpecialty(name);
 		},
 
 		async decideApplication(

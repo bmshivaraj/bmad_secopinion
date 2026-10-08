@@ -20,6 +20,11 @@ interface Application {
   credentials: Credential[];
 }
 
+interface Specialty {
+  id: string;
+  name: string;
+}
+
 interface ApiResult<T> {
   data: T | null;
   error: { message: string } | null;
@@ -33,13 +38,18 @@ function formatFileSize(sizeBytes: number): string {
 
 export default function AdminPage() {
   const [applications, setApplications] = useState<Application[]>([]);
+  const [specialties, setSpecialties] = useState<Specialty[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSpecialtiesLoading, setIsSpecialtiesLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAddingSpecialty, setIsAddingSpecialty] = useState(false);
   const [busyDoctorId, setBusyDoctorId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [specialtyError, setSpecialtyError] = useState("");
+  const [specialtyNotice, setSpecialtyNotice] = useState("");
 
   useEffect(() => {
     let isCurrent = true;
@@ -69,7 +79,33 @@ export default function AdminPage() {
       }
     }
 
+    async function loadSpecialties() {
+      setIsSpecialtiesLoading(true);
+      try {
+        const response = await fetch("/api/admin/specialties", { cache: "no-store" });
+        const result = await response.json() as ApiResult<Specialty[]>;
+        if (!isCurrent) return;
+        if (response.status === 401) {
+          setIsAuthenticated(false);
+          setSpecialties([]);
+          return;
+        }
+        if (!response.ok || result.error || !result.data) {
+          setSpecialtyError(result.error?.message ?? "Unable to load the Specialty catalog.");
+          return;
+        }
+        setIsAuthenticated(true);
+        setSpecialties(result.data);
+        setSpecialtyError("");
+      } catch {
+        if (isCurrent) setSpecialtyError("Unable to connect. Please try again.");
+      } finally {
+        if (isCurrent) setIsSpecialtiesLoading(false);
+      }
+    }
+
     void loadQueue();
+    void loadSpecialties();
     return () => {
       isCurrent = false;
     };
@@ -127,14 +163,47 @@ export default function AdminPage() {
     }
   }
 
+  async function handleAddSpecialty(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isSpecialtiesLoading || isAddingSpecialty) return;
+    setSpecialtyError("");
+    setSpecialtyNotice("");
+    setIsAddingSpecialty(true);
+    const form = event.currentTarget;
+    const name = new FormData(form).get("specialtyName");
+    try {
+      const response = await fetch("/api/admin/specialties", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const result = await response.json() as ApiResult<Specialty>;
+      if (!response.ok || result.error || !result.data) {
+        setSpecialtyError(result.error?.message ?? "Unable to add the Specialty.");
+        return;
+      }
+      setSpecialties((current) => [...current, result.data!].sort((left, right) => left.name.localeCompare(right.name)));
+      form.reset();
+      setSpecialtyNotice(`${result.data.name} added to the catalog.`);
+    } catch {
+      setSpecialtyError("Unable to connect. Please try again.");
+    } finally {
+      setIsAddingSpecialty(false);
+    }
+  }
+
   async function handleLogout() {
     try {
       const response = await fetch("/api/admin/logout", { method: "POST" });
       if (!response.ok) throw new Error("Logout request failed.");
       setIsAuthenticated(false);
       setApplications([]);
+      setSpecialties([]);
       setError("");
       setNotice("");
+      setSpecialtyError("");
+      setSpecialtyNotice("");
+      setRefreshKey((value) => value + 1);
     } catch {
       setError("Unable to sign out. Please try again.");
     }
@@ -239,6 +308,53 @@ export default function AdminPage() {
             ))}
           </div>
         )}
+
+        <section className="admin-specialty-section" aria-labelledby="admin-specialty-heading">
+          <div className="admin-heading-row">
+            <div>
+              <p className="admin-eyebrow">Reference data</p>
+              <h1 id="admin-specialty-heading">Specialty catalog</h1>
+            </div>
+            {!isSpecialtiesLoading && <p className="admin-queue-count">{specialties.length} active</p>}
+          </div>
+          {specialtyNotice && <p className="admin-notice" role="status">{specialtyNotice}</p>}
+          {specialtyError && <p className="admin-error" role="alert">{specialtyError}</p>}
+          {specialtyError && !isSpecialtiesLoading && (
+            <button className="admin-signout" type="button" onClick={() => setRefreshKey((value) => value + 1)}>
+              Retry loading catalog
+            </button>
+          )}
+          <form className="admin-specialty-form" onSubmit={handleAddSpecialty}>
+            <div className="field-group">
+              <label htmlFor="specialty-name">New Specialty</label>
+              <input
+                id="specialty-name"
+                name="specialtyName"
+                type="text"
+                maxLength={120}
+                required
+                autoComplete="off"
+                placeholder="e.g. Rheumatology"
+                disabled={isAddingSpecialty || isSpecialtiesLoading}
+              />
+            </div>
+            <button className="admin-decision admin-decision-approve" type="submit" disabled={isAddingSpecialty || isSpecialtiesLoading}>
+              {isAddingSpecialty ? "Adding..." : "Add Specialty"}
+            </button>
+          </form>
+          {isSpecialtiesLoading ? (
+            <p className="admin-muted" role="status">Loading specialties...</p>
+          ) : specialtyError ? null : specialties.length === 0 ? (
+            <div className="admin-empty-state">
+              <h2>No active specialties</h2>
+              <p>Add the first Specialty to make it available for Doctor registration.</p>
+            </div>
+          ) : (
+            <ul className="admin-specialty-list">
+              {specialties.map((specialty) => <li key={specialty.id}>{specialty.name}</li>)}
+            </ul>
+          )}
+        </section>
       </section>
     </main>
   );

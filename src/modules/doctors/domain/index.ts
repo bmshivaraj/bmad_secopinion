@@ -47,6 +47,14 @@ export class InvalidRequestError extends DomainError {
 	readonly code = "VALIDATION_ERROR";
 }
 
+export class SpecialtyNameAlreadyExistsError extends DomainError {
+	readonly code = "SPECIALTY_NAME_ALREADY_EXISTS";
+
+	constructor() {
+		super("A Specialty with this name already exists.");
+	}
+}
+
 export class InvalidUpiIdError extends DomainError {
 	readonly code = "INVALID_UPI_ID";
 

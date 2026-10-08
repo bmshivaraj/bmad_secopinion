@@ -44,6 +44,14 @@ function createFixture() {
         credentials: [{ id: "credential-1", fileName: "degree.pdf", contentType: "application/pdf", sizeBytes: 100, createdAt: now }],
       };
     },
+    async listActiveSpecialties() {
+      calls.push(["list-specialties"]);
+      return [{ id: "specialty-cardio", name: "Cardiology" }];
+    },
+    async createSpecialty(name: string) {
+      calls.push(["create-specialty", name]);
+      return { id: "specialty-new", name };
+    },
   };
   const service = createAdminService({ async findByUsername(username) { return username === account.username ? account : null; } }, doctors);
   return { service, calls };
@@ -78,11 +86,25 @@ test("Admin review delegates pending reads and decisions to Doctors with secure 
   assert.deepEqual(calls[1], ["decide", caller, "doctor-1", "Rejected"]);
 });
 
+test("Admin catalog operations delegate active listing and creation to Doctors", async () => {
+  const { service, calls } = createFixture();
+  const caller = { userId: accountId, role: "admin" as const };
+
+  assert.deepEqual(await service.listSpecialties(caller), [{ id: "specialty-cardio", name: "Cardiology" }]);
+  assert.deepEqual(await service.addSpecialty(caller, "Rheumatology"), {
+    id: "specialty-new",
+    name: "Rheumatology",
+  });
+  assert.deepEqual(calls.slice(-2), [["list-specialties"], ["create-specialty", "Rheumatology"]]);
+});
+
 test("non-Admin callers cannot read or decide applications", async () => {
   const { service, calls } = createFixture();
   const caller = { userId: randomUUID(), role: "doctor" as const };
   await assert.rejects(service.listPendingApplications(caller), AdminAccessDeniedError);
   await assert.rejects(service.decideApplication(caller, "doctor-1", "Verified"), AdminAccessDeniedError);
+  await assert.rejects(service.listSpecialties(caller), AdminAccessDeniedError);
+  await assert.rejects(service.addSpecialty(caller, "Rheumatology"), AdminAccessDeniedError);
   assert.deepEqual(calls, []);
 });
 

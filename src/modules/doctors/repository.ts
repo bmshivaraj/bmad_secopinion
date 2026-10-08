@@ -79,6 +79,13 @@ export const doctorsRepository = {
 		});
 	},
 
+	async createSpecialty(input: { name: string; normalizedName: string }): Promise<SpecialtySummary> {
+		return prisma.specialty.create({
+			data: { ...input, active: true },
+			select: { id: true, name: true },
+		});
+	},
+
 	async createApplication(input: {
 		mobileNumber: string;
 		fullName: string;

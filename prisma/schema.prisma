@@ -27,12 +27,13 @@ enum DoctorVerificationStatus {
 // Admin-extensible reference table (AD-15). Doctor.specialties (added in a later story)
 // will be a many-to-many join against this table.
 model Specialty {
-  id        String   @id @default(uuid())
-  name      String   @unique
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  doctors   DoctorSpecialty[]
+  id             String   @id @default(uuid())
+  name           String   @unique
+  normalizedName String   @unique @map("normalized_name")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  doctors        DoctorSpecialty[]
 
   @@map("specialties")
 }

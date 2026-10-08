@@ -11,6 +11,8 @@ const { adminRepository } = await import("./repository");
 const { doctorsRepository } = await import("../doctors/repository");
 const { POST: loginPost } = await import("../../app/api/admin/login/route");
 const { GET: queueGet } = await import("../../app/api/admin/verification-queue/route");
+const { GET: specialtiesGet, POST: specialtiesPost } = await import("../../app/api/admin/specialties/route");
+const { GET: doctorSpecialtiesGet } = await import("../../app/api/doctors/specialties/route");
 const { PATCH: verificationPatch } = await import("../../app/api/admin/doctors/[doctorId]/verification/route");
 
 const adminId = randomUUID();
@@ -164,5 +166,90 @@ test("Admin API authenticates from its cookie, returns private links, and only a
     doctorsRepository.listPendingApplications = originals.listPendingApplications;
     doctorsRepository.findById = originals.findById;
     doctorsRepository.updatePendingVerificationStatus = originals.updatePendingVerificationStatus;
+  }
+});
+
+test("Admin Specialty API lists, adds, validates, and denies non-Admin callers", async () => {
+  const originals = {
+    listActiveSpecialties: doctorsRepository.listActiveSpecialties,
+    createSpecialty: doctorsRepository.createSpecialty,
+  };
+  const catalog = [{ id: "specialty-cardio", name: "Cardiology" }];
+  doctorsRepository.listActiveSpecialties = async () => catalog;
+  doctorsRepository.createSpecialty = async (input) => {
+    if (catalog.some(({ name }) => name.toLowerCase() === input.normalizedName)) {
+      throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+    }
+    const specialty = { id: randomUUID(), name: input.name };
+    catalog.push(specialty);
+    catalog.sort((left, right) => left.name.localeCompare(right.name));
+    return specialty;
+  };
+
+  const adminCookie = `admin_session=${signAuthToken({ userId: adminId, role: "admin" })}`;
+  const post = (name: unknown, cookie = adminCookie) => specialtiesPost(new Request(
+    "http://localhost/api/admin/specialties",
+    {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    },
+  ));
+
+  try {
+    const initial = await specialtiesGet(new Request("http://localhost/api/admin/specialties", {
+      headers: { cookie: adminCookie },
+    }));
+    assert.equal(initial.status, 200);
+    assert.equal(initial.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual((await initial.json() as { data: { name: string }[] }).data.map(({ name }) => name), ["Cardiology"]);
+
+    for (const cookie of ["", "admin_session=invalid-token"]) {
+      const request = cookie
+        ? new Request("http://localhost/api/admin/specialties", { headers: { cookie } })
+        : new Request("http://localhost/api/admin/specialties");
+      const deniedList = await specialtiesGet(request);
+      assert.equal(deniedList.status, 401);
+    }
+
+    const added = await post("  Rheumatology  ");
+    assert.equal(added.status, 201);
+    assert.equal((await added.json() as { data: { name: string } }).data.name, "Rheumatology");
+    const updated = await specialtiesGet(new Request("http://localhost/api/admin/specialties", {
+      headers: { cookie: adminCookie },
+    }));
+    assert.deepEqual((await updated.json() as { data: { name: string }[] }).data.map(({ name }) => name), [
+      "Cardiology",
+      "Rheumatology",
+    ]);
+    const doctorRegistrationList = await doctorSpecialtiesGet();
+    assert.deepEqual(
+      (await doctorRegistrationList.json() as { data: { name: string }[] }).data.map(({ name }) => name),
+      ["Cardiology", "Rheumatology"],
+    );
+
+    const duplicate = await post("rHeUmAtOlOgY");
+    assert.equal(duplicate.status, 409);
+    assert.equal((await duplicate.json() as { error: { code: string } }).error.code, "SPECIALTY_NAME_ALREADY_EXISTS");
+    for (const invalidName of ["   ", "x".repeat(121), 42]) {
+      const invalid = await post(invalidName);
+      assert.equal(invalid.status, 400);
+    }
+
+    for (const role of ["doctor", "patient"] as const) {
+      const denied = await post("Unauthorized Specialty", `admin_session=${signAuthToken({ userId: randomUUID(), role })}`);
+      assert.equal(denied.status, 403);
+      const deniedList = await specialtiesGet(new Request("http://localhost/api/admin/specialties", {
+        headers: { cookie: `admin_session=${signAuthToken({ userId: randomUUID(), role })}` },
+      }));
+      assert.equal(deniedList.status, 403);
+    }
+    for (const cookie of ["", "admin_session=invalid-token"]) {
+      assert.equal((await post("Unauthorized Specialty", cookie)).status, 401);
+    }
+    assert.equal(catalog.length, 2);
+  } finally {
+    doctorsRepository.listActiveSpecialties = originals.listActiveSpecialties;
+    doctorsRepository.createSpecialty = originals.createSpecialty;
   }
 });

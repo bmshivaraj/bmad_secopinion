@@ -66,6 +66,23 @@ test("Admin login issues an Admin-role session and rejects invalid credentials",
   await assert.rejects(service.login("unknown-admin", "SecureAdminPass1"), { code: "INVALID_CREDENTIALS" });
 });
 
+test("Admin login stops checking credentials after twenty failures for one username", async () => {
+  let lookupCount = 0;
+  const service = createAdminService({
+    async findByUsername() {
+      lookupCount += 1;
+      return null;
+    },
+  });
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await assert.rejects(service.login("locked-admin", "WrongPassword1"), { code: "INVALID_CREDENTIALS" });
+  }
+  assert.equal(lookupCount, 20);
+  await assert.rejects(service.login("locked-admin", "WrongPassword1"), { code: "INVALID_CREDENTIALS" });
+  assert.equal(lookupCount, 20);
+});
+
 test("Admin review delegates pending reads and decisions to Doctors with secure credential links", async () => {
   const { service, calls } = createFixture();
   const caller = { userId: accountId, role: "admin" as const };
@@ -113,6 +130,7 @@ test("Admin seed requires operator credentials and normalizes the username", () 
   assert.throws(() => getAdminSeedCredentials({ ADMIN_USERNAME: "operator" }), /ADMIN_USERNAME and ADMIN_PASSWORD/);
   assert.throws(() => getAdminSeedCredentials({ ADMIN_USERNAME: "operator", ADMIN_PASSWORD: "        " }), /ADMIN_PASSWORD must be/);
   assert.throws(() => getAdminSeedCredentials({ ADMIN_USERNAME: "operator", ADMIN_PASSWORD: "weakpass" }), /ADMIN_PASSWORD must be/);
+  assert.throws(() => getAdminSeedCredentials({ ADMIN_USERNAME: "o".repeat(101), ADMIN_PASSWORD: "Secret1!" }), /ADMIN_USERNAME must be/);
   assert.deepEqual(getAdminSeedCredentials({ ADMIN_USERNAME: " Operator ", ADMIN_PASSWORD: "Secret1!" }), {
     username: "operator",
     password: "Secret1!",

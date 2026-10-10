@@ -51,6 +51,9 @@ export function getAdminSeedCredentials(
   if (!username || !password) {
     throw new Error("ADMIN_USERNAME and ADMIN_PASSWORD environment variables are required to seed the Admin account.");
   }
+  if (username.length > 100) {
+    throw new Error("ADMIN_USERNAME must be no longer than 100 characters.");
+  }
   if (
     password.length < MIN_ADMIN_PASSWORD_LENGTH
     || password.length > MAX_ADMIN_PASSWORD_LENGTH

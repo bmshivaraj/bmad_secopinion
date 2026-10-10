@@ -42,6 +42,38 @@
   summary: Apply the Doctor UPI migration and verify payout ID create/read/update persistence against PostgreSQL.
   evidence: Prisma validation and client generation pass, but migration application and real repository persistence could not be verified because PostgreSQL rejected the configured credentials with `P1000`.
 
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-doctor-upi-payout-details.md`
+  summary: Repair malformed Story 2.2 frontmatter so the title and metadata parse correctly.
+  evidence: The current working-tree file starts with a stray title fragment instead of a YAML frontmatter delimiter; it predates and is unrelated to Story 2.3.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-admin-manual-verification-review.md`
+  summary: Verify Pending-only Doctor status updates and application persistence against PostgreSQL, including overlapping decisions.
+  evidence: The repository uses a transactional conditional update and fake-based suites pass, but a database-backed race/persistence assertion is unavailable because PostgreSQL authentication returns `P1000`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-admin-manual-verification-review.md`
+  summary: Confirm whether verification decisions require a retained actor, rationale, and audit history.
+  evidence: The approved workflow makes decisions final but specifies one Admin and does not define an audit record; product/compliance requirements are needed before adding persistence or UI.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-admin-manual-verification-review.md`
+  summary: Reconcile Story 2.4's done spec status with its backlog sprint-status entry.
+  evidence: The Story 2.4 spec is marked done while `2-4-admin-manages-specialty-catalog` remains backlog; this unrelated tracker discrepancy was not changed.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-2-doctor-upi-payout-details.md`
+  summary: Repair malformed Story 2.2 frontmatter so the title and metadata parse correctly.
+  evidence: The current working-tree file starts with a stray title fragment instead of a YAML frontmatter delimiter; it predates and is unrelated to Story 2.3.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-admin-manual-verification-review.md`
+  summary: Verify Pending-only Doctor status updates and application persistence against PostgreSQL, including overlapping decisions.
+  evidence: The repository uses a transactional conditional update and fake-based suites pass, but a database-backed race/persistence assertion is unavailable because PostgreSQL authentication returns `P1000`.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-admin-manual-verification-review.md`
+  summary: Confirm whether verification decisions require a retained actor, rationale, and audit history.
+  evidence: The approved workflow makes decisions final but specifies one Admin and does not define an audit record; product/compliance requirements are needed before adding persistence or UI.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-2-3-admin-manual-verification-review.md`
+  summary: Reconcile Story 2.4's done spec status with its backlog sprint-status entry.
+  evidence: The Story 2.4 spec is marked done while `2-4-admin-manages-specialty-catalog` remains backlog; this unrelated tracker discrepancy was not changed.
+
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-4-admin-manages-specialty-catalog.md`
   summary: Apply the Specialty normalized-name migration against PostgreSQL and verify backfill, Doctor-Specialty relationships, and case-only duplicate rejection.
   evidence: The migration could not be applied because PostgreSQL rejected the configured credentials with `P1000`; the shipped 15 default names are unique after normalization, but deployed database contents and data relationships could not be inspected.

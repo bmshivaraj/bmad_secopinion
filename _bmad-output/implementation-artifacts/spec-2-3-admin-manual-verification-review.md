@@ -19,9 +19,9 @@ context: ['_bmad-output/implementation-artifacts/epic-2-context.md']
 
 ## Boundaries & Constraints
 
-**Always:** Require an Admin-role session for queue and review actions; never trust a caller-supplied Admin or Doctor identity; have Admin use the Doctors service for Doctor-owned reads and status changes; list only Pending Doctors with specialties and credential metadata; serve credential bytes through the existing Doctors service authorization and private credential route; ensure only Verified Doctors pass `getVerifiedDoctor`; return typed errors in `{ data, error }` envelopes; support the single Admin role only; seed one Admin from operator-provided `ADMIN_USERNAME` and `ADMIN_PASSWORD`, hash the password with Argon2id, and fail seeding if either value is missing; upsert the fixed Admin account from those values on each seed run so environment changes rotate credentials; show rejection status at the Doctor's next sign-in without outbound notification; allow only Pending → Verified/Rejected through this queue, with decisions final.
+**Always:** Require an Admin-role session for queue and review actions; never trust a caller-supplied Admin or Doctor identity; have Admin use the Doctors service for Doctor-owned reads and status changes; list only Pending Doctors with specialties and credential metadata; serve credential bytes through the existing Doctors service authorization and private credential route; ensure only Verified Doctors pass `getVerifiedDoctor`; return typed errors in `{ data, error }` envelopes; support the single Admin role only; seed one Admin from operator-provided `ADMIN_USERNAME` and `ADMIN_PASSWORD`, hash the password with Argon2id, and fail seeding if either value is missing; show rejection status at the Doctor's next sign-in without outbound notification; allow only Pending → Verified/Rejected through this queue, with decisions final; restore only the minimal Doctors-owned Specialty list/create operations required by existing Admin routes, without changing their UI or route behavior.
 
-**Never:** Permit Admin self-registration, expose storage keys or public credential URLs, allow Doctors/Patients to review applications or change status, add automated registry checks, or add case assignment, payout, specialty-catalog, or multi-admin permissions workflows.
+**Never:** Permit Admin self-registration, expose storage keys or public credential URLs, allow Doctors/Patients to review applications or change status, add automated registry checks, or add case assignment, payout, new Specialty UI/routes, or multi-admin permissions workflows.
 
 ## I/O & Edge-Case Matrix
 
@@ -38,69 +38,79 @@ context: ['_bmad-output/implementation-artifacts/epic-2-context.md']
 
 ## Code Map
 
-- `src/modules/admin/{domain/index.ts,repository.ts,service.ts,routes/index.ts}` -- Admin files are placeholders. Keep Admin orchestration here; its repository owns Admin-account lookup, while Doctor data/status must go through `doctorsService`.
-- `src/shared/auth-context.ts` and `src/modules/doctors/routes/index.ts` -- `signAuthToken`/`verifyAuthToken` accept the `admin` role; reuse `ADMIN_SESSION_COOKIE`, cookie parsing, and session-token validation.
-- `src/modules/doctors/{domain/index.ts,repository.ts,service.ts}` -- Doctor owns verification status, credential access, and `getVerifiedDoctor`; add a Pending-only projection and conditional Pending-to-final status transition here. `getCredential` already permits Admin or owning Doctor.
-- `src/app/api/doctors/credentials/[credentialId]/route.ts` -- existing private credential endpoint delegates authorization to `doctorsService`; return credential metadata/links in the queue, never storage keys or file bytes.
-- `src/app/api/doctors/login/route.ts` and `src/app/doctors/login/page.tsx` -- login already returns and displays any verification status, including Rejected. Verify this behavior; no outbound-notification or UI rewrite is needed.
-- `src/app/api/admin/` and `src/app/admin/` -- add Admin login, protected queue/decision endpoints, and the minimal review UI.
-- `prisma/schema.prisma`, `prisma/migrations/`, and `prisma/seed.ts` -- no Admin account model exists. Reuse Prisma model/migration conventions and `argon2.hash(..., { type: argon2.argon2id })`; the existing settings seed demonstrates fixed-ID idempotent upsert.
-- `src/modules/doctors/service.test.ts`, new Admin tests, and `package.json` -- follow Node's `tsx --test` patterns; include new Admin tests in the explicit `npm test` script.
+- `src/modules/admin/service.ts`, `src/modules/admin/routes/index.ts`, `src/app/api/admin/`, and `src/app/admin/page.tsx` -- Admin auth, queue/decision orchestration, private credential links, and review UI already exist; preserve these contracts and current empty/error states.
+- `src/modules/doctors/domain/index.ts`, `repository.ts`, and `service.ts` -- add typed review errors, a Pending-only application read, and a conditional final-status update; reuse `getCredential` authorization and `getVerifiedDoctor` eligibility checks.
+- `src/shared/auth-context.ts`, `src/modules/doctors/routes/index.ts`, and the credential API route -- reuse verified Admin claims and the existing Admin-or-owner credential access boundary; never expose storage keys.
+- `prisma/schema.prisma`, existing Admin/Specialty migrations, and `prisma/seed.ts` -- reconcile the Prisma models/fields with existing SQL and seed usage; do not add a duplicate migration or alter seed credential policy.
+- `src/modules/admin/service.test.ts`, `src/modules/admin/routes.test.ts`, `src/modules/doctors/service.test.ts`, and `package.json` -- review suites exist, but `npm test` excludes Admin tests; current typecheck errors are localized to missing Doctor review/catalog service contracts.
+- `src/app/doctors/login/page.tsx` and Doctor login service -- preserve the existing verification-status response and Rejected notice; no outbound notification provider exists or is in scope.
 
 ## Tasks & Acceptance
 
 **Execution:**
-- [x] `src/modules/doctors/repository.ts` and `src/modules/doctors/service.ts` -- list Pending applications and conditionally change status -- preserves Doctor ownership and rejects stale writes.
-- [x] `src/modules/admin/` and `src/app/api/admin/` -- implement Admin login and protected review operations through `doctorsService` -- protects actions and respects module ownership.
-- [x] `src/app/admin/` -- build the minimal review queue/detail UI with credential links, final decisions, and empty/error states -- supports manual review.
-- [x] `prisma/schema.prisma`, migration, and `prisma/seed.ts` -- seed one Admin from required environment credentials with an Argon2id hash; fail when values are missing -- provides secure operator access without a default password.
-- [x] `src/app/api/doctors/login/route.ts` and `src/app/doctors/login/page.tsx` -- verify the existing login response and notice show Rejected -- fulfills notice behavior without outbound delivery.
-- [x] Doctor/Admin tests and `package.json` -- cover queue filtering, role gates, credential authorization, final Pending-only transitions, missing-seed-credential failure, and rejection status; include Admin tests in `npm test` -- covers the matrix.
+- [x] `src/modules/doctors/domain/index.ts`, `src/modules/doctors/repository.ts`, `src/modules/doctors/service.ts` -- add typed review errors, Pending-only reads, conditional final decisions, and the minimal existing Specialty create contract -- preserves Doctors ownership and rejects stale writes without changing Admin UI/routes.
+- [x] `prisma/schema.prisma` -- restore existing `AdminAccount` and `Specialty.normalizedName` fields to match migrations and seed -- fixes generated-client consistency without a duplicate migration.
+- [x] `src/modules/admin/service.ts`, `src/modules/admin/routes/index.ts`, `src/app/api/admin/`, `src/app/admin/page.tsx` -- complete and verify review through `doctorsService`, retaining private links and existing empty/error states -- enforces module and role boundaries.
+- [x] `src/modules/admin/service.test.ts`, `src/modules/admin/routes.test.ts`, `src/modules/doctors/service.test.ts`, `package.json` -- cover queue, authorization, privacy, final decisions, Specialty compatibility, seed, and rejection notice; include Admin suites in `npm test` -- restores the test gate.
+- [x] `prisma/seed.ts` -- retain operator-provided credentials, Argon2id hashing, and the fixed-ID upsert without a default password -- supports secure provisioning.
 
 **Acceptance Criteria:**
-- Given a valid Admin session, when the Admin opens the review queue, then it lists every Pending Doctor with specialties and secure links to their uploaded credentials.
-- Given a missing, invalid, Patient, or Doctor session, when a caller requests the queue or changes a Doctor status, then the request is rejected and no data changes.
-- Given an Admin opens a credential link, when the credential exists, then the private bytes are returned only to the Admin or owning Doctor through the existing service authorization boundary.
-- Given a Pending Doctor, when the Admin marks the application Verified, then the persisted status is Verified and `getVerifiedDoctor` returns the Doctor summary.
-- Given a Pending Doctor, when the Admin rejects the application, then the persisted status is Rejected, the Doctor cannot pass the verified-Doctor gate, and the Doctor sees Rejected at next sign-in without SMS/email delivery.
-- Given a non-Pending Doctor or a duplicate/stale decision, when the Admin submits another status change, then the API returns a typed conflict and leaves the final decision unchanged.
+- Given an authenticated Admin, when they review applications, then only Pending Doctors and private credential links are exposed; other roles cannot read or decide.
+- Given a Pending Doctor, when the Admin chooses Verified or Rejected, then the Doctor-owned status changes once, stale decisions conflict, and `getVerifiedDoctor` admits only Verified Doctors.
+- Given a rejected Doctor, when they next sign in, then the response and UI show Rejected without sending an external notification.
+- Given the existing Admin Specialty routes, when they list or create catalog entries, then the current behavior continues through Doctors-owned operations without UI or route changes.
 
 ## Implementation Notes
 
-- Added the single fixed-ID Admin account model and environment-driven Argon2id seed; reseeding with changed environment values updates the account credentials.
-- Added Admin login, protected Pending queue and final decision endpoints, and the manual review UI. The Admin service delegates Doctor reads and status changes through `doctorsService`; Doctor status transitions are conditional on the persisted Pending state.
-- Added Admin and Doctor tests for role gates, private credential metadata/access, empty queues, final decisions, and rejected status at login. `npm test` passed all 65 tests; focused Admin tests passed all 5 tests; `npx tsc --noEmit`, `npx prisma validate`, `npx prisma generate`, and `npm run build` passed.
-- Added Admin and Doctor tests for role gates, private credential metadata/access, empty queues, final decisions, and rejected status at login. `npm test` passed all 67 tests; focused Admin tests passed; `npx tsc --noEmit`, `npx prisma validate`, `npx prisma generate`, and `npm run build` passed.
-- Migration application and database-backed manual review remain unverified: `npx prisma migrate dev --name add_admin_verification_review` failed with PostgreSQL `P1000` because the configured credentials were rejected. No migration success is claimed.
+- Added Doctors-owned Specialty creation and Pending-only review persistence. Status updates use a transactional `updateMany` predicate so only a currently Pending Doctor can transition once.
+- Restored `AdminAccount` and `Specialty.normalizedName` in Prisma to match existing migrations; no migration was added. Registered the existing Admin service and route suites in `npm test`.
+- `npm test` passed all 69 Patient, Doctor, and Admin tests; `npx tsc --noEmit`, `npx prisma validate`, `npx prisma generate`, and `npm run build` passed.
+- Browser checks with mocked APIs covered Admin sign-in, queue records and private credential links, Verify/Reject confirmations, empty queue, and the Doctor's Rejected sign-in notice. These checks did not exercise database persistence.
+- `npx prisma migrate status` returned PostgreSQL `P1000` with the available local credentials. No migration was applied; database-backed persistence remains unverified.
+- Review fixes aligned the sprint story state, constrained Admin seed usernames to the login limit, tested the login lockout, and separated queue-load failure from the empty state with retry. The mocked browser retry recovered to the empty queue.
 
-Review fixes also enforce the existing Doctor password-strength policy for seeded Admin credentials, confirm irreversible decisions, handle logout failures, and test the pending-only Prisma predicate and Admin credential rotation payload.
 ## Spec Change Log
 
 ## Review Triage Log
 
-- blind-hunter: process-local login throttle -- **low**. Shared storage is already deferred until multi-instance deployment, and this v1 uses the existing single-replica assumption; shared throttling would add an unneeded storage dependency now.
-- blind-hunter: weak or whitespace Admin seed password -- **medium**. Patched by requiring 8-1024 characters including uppercase, lowercase, and numeric characters, matching the established Doctor password policy; focused seed tests pass.
-- blind-hunter: irreversible decision has no confirmation -- **medium**. Patched with a confirmation naming the Doctor, outcome, and finality before the request is sent.
-- blind-hunter: no rejection reason or remediation path -- **low**. Rejected because the approved acceptance requires a Rejected status at next sign-in; adding reason fields and remediation is a separate workflow not required here.
-- blind-hunter: no durable decision actor/rationale audit record -- **low**. Rejected because this story provisions a single Admin and requires only a final status; an audit ledger would add a new persistence model without an approved audit requirement.
-- blind-hunter: no HTTP credential-route test -- **false**. The unchanged credential route delegates to the service boundary; existing tests verify Admin/owner bytes, foreign-role denial, and typed not-found, while the new queue test verifies it exposes only a private route link and metadata.
-- blind-hunter: no route/UI assertion for Rejected at next login -- **false**. The service test verifies Rejected is returned, the login route forwards `verificationStatus`, and the existing Doctor page interpolates that value into its status notice.
-- blind-hunter: queue has no pagination -- **low**. The requirement is to list every Pending application and no volume/SLA target is defined; pagination would add API/UI contract beyond the current single-Admin queue.
-- blind-hunter: queue does not show application age -- **low**. The repository orders oldest applications first, and age display is not part of the approved review criteria.
-- edge-case-hunter: logout network failure is unhandled -- **medium**. Patched to catch failed requests and keep the authenticated view with a visible error instead of an unhandled rejection.
-- verification-gap: pending-only repository predicate lacks a test -- **medium**. Patched with a repository-level test that captures the real Prisma call and asserts the `id` plus `verificationStatus: Pending` filter; Doctor tests pass.
-- verification-gap: Admin seed create/rotation/hash payload lacks a test -- **medium**. Patched with tests for the fixed account ID, updated username, and Argon2id hash verifying only the new password.
+- **low | defer** — Blind Hunter: Story 2.2 frontmatter is malformed in the pre-existing working tree, preventing reliable metadata parsing; unrelated to this story and left unchanged.
+- **low | defer** — Edge Case Hunter: Story 2.2 frontmatter is malformed in the pre-existing working tree, preventing reliable metadata parsing; same pre-existing issue, left unchanged.
+- **false** — Blind Hunter: the phrase “notify the Doctor” is clarified by the approved constraint and acceptance criterion: show Rejected at next sign-in with no outbound notification.
+- **low | patch** — Blind Hunter: spec was `in-review` while sprint status remained `in-progress`; the sprint entry was advanced to `review`. The final workflow marks the spec `done` while retaining sprint `review` for its separate review gate.
+- **low | defer** — Blind Hunter: Story 2.4 says `done` while sprint status says `backlog`; this pre-existing tracker mismatch is outside Story 2.3.
+- **false** — Blind Hunter: Admin services, routes, page, and tests already existed in the working tree when Story 2.3 planning began; the diff's older baseline predates them.
+- **maybe-false | defer** — Blind Hunter: a separate actor/reason audit record may be required for irreversible review decisions; the approved single-Admin intent does not define that requirement. Product/compliance confirmation would settle it.
+- **false** — Blind Hunter: appeal/reapplication behavior is not required by the approved final-decision scope; adding it would change the approved workflow.
+- **maybe-false | defer** — Blind Hunter: Story 2.4 migration/backfill and durable uniqueness could not be checked against PostgreSQL because credentials fail with `P1000`; valid database access and persisted-row assertions would settle the risk.
+- **maybe-false | defer** — Verification Gap Reviewer: Story 2.4 migration/backfill and durable uniqueness lack database-backed verification because credentials fail with `P1000`; valid database access and persisted-row assertions would settle the risk.
+- **false** — Blind Hunter: supported Specialty writes compute `normalizedName` with JavaScript for every new row, while the migration normalizes only existing seeded ASCII names; the cited implementation mismatch does not produce divergent app writes.
+- **false** — Blind Hunter: typo recovery would require editing/removing a Specialty, explicitly excluded by the approved add-only intent.
+- **maybe-false | defer** — Blind Hunter: Epic 3 document size/content limits remain unspecified; resolve these before implementing its upload flow.
+- **maybe-false | defer** — Blind Hunter: Epic 3 payment idempotency and recovery after provider success/database failure remain unspecified; resolve before implementing payment submission.
+- **maybe-false | defer** — Blind Hunter: Epic 3 currency storage precision/rounding is unspecified; define it before money persistence is implemented.
+- **maybe-false | defer** — Blind Hunter: Epic 3 draft retention after failed payment is unspecified; define the retry/expiry behavior before implementing payment submission.
+- **low | defer** — Blind Hunter: Story 2.4 implementation and review notes are placed under Verification; this pre-existing document-organization issue is outside Story 2.3.
+- **low | defer** — Edge Case Hunter: Story 2.2 frontmatter metadata remains malformed; same pre-existing documentation issue as the Blind Hunter finding.
+- **low | patch** — Edge Case Hunter: Admin seed accepted usernames longer than the login service's 100-character limit; seed validation now rejects them and has regression coverage.
+- **maybe-false | defer** — Verification Gap Reviewer: fake repositories do not verify the database concurrency predicate; a live overlapping-decision test is still blocked by PostgreSQL `P1000`.
+- **low | patch** — Verification Gap Reviewer: Admin lockout had no threshold test; added coverage proving the 21st attempt is rejected before another repository lookup.
+- **medium | patch** — Verification Gap Reviewer: queue-load failure also rendered “Queue clear”; the UI now shows an unavailable state, hides the count, and offers retry. Mocked browser checks confirmed failure and recovery states.
+
 ## Design Notes
 
-The Admin module orchestrates review, but Doctors owns Doctor records and status. The existing credential endpoint already delegates authorization to the Doctors service; the queue should return credential metadata/links, not file bytes or storage paths. The current Case queue is not implemented, so status integration for Epic 4 is through the existing `getVerifiedDoctor` eligibility seam. Admin seed credentials must come from deployment/local environment and never be embedded in source; the Doctor sees a rejected status at next sign-in, so no notification store or outbound provider is introduced.
+Doctors owns verification status; Admin delegates through its service. The queue returns private credential links and metadata only. Decisions are persisted and final, so updates must be conditional on the current Pending status. Epic 4 uses the existing `getVerifiedDoctor` gate. Existing SQL migrations already define the Admin account and normalized Specialty name; reconcile Prisma without creating duplicate migrations. Seed credentials remain environment-provided; rejection is shown at sign-in without outbound notification. The existing Specialty create contract is included only as a compatibility repair; its UI and routes remain unchanged.
 
 ## Verification
 
 **Commands:**
-- `npm test` -- expected: Patient, Doctor, and new Admin tests pass.
-- `npx tsc --noEmit` and `npm run build` -- expected: new Admin APIs and pages compile.
-- `npx prisma validate` and `npx prisma generate` -- expected: any approved Admin model/schema changes validate and generate.
-- `npx prisma migrate dev --name add_admin_verification_review` -- expected: additive schema changes apply to PostgreSQL; report any environment/authentication blocker without claiming the migration ran.
+- `npm test`, `npx tsc --noEmit`, and `npm run build` -- expected: Patient, Doctor, and Admin suites pass; app compiles.
+- `npx prisma validate` and `npx prisma generate` -- expected: schema matches existing migrations and seed.
+- `npx prisma migrate status` -- expected: inspect existing Admin migration; apply only if configured PostgreSQL credentials are valid, and report any blocker without claiming success.
 
 **Manual checks:**
-- Sign in as the seeded Admin, review a Pending Doctor and credential, perform each decision, and verify Doctor-visible status/notification and non-Admin access denial.
+- Sign in as the seeded Admin, review a Pending Doctor and private credential link, perform Verified and Rejected decisions, then verify the Doctor login notice and denial of non-Admin queue/decision access.
+- Confirm a repeated/stale decision leaves the original final status unchanged; do not claim database-backed migration or persistence verification unless PostgreSQL accepts the configured credentials.
+
+**Pre-implementation baseline:**
+- `npx tsc --noEmit` reports 19 errors in `src/modules/admin/service.ts` and `src/modules/admin/routes.test.ts`, reflecting missing Doctors review and Specialty service/repository contracts.
+- `npx prisma validate` passes when `DATABASE_URL` is supplied; the current `npm test` script omits both Admin suites.

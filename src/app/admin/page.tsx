@@ -56,6 +56,7 @@ export default function AdminPage() {
 
     async function loadQueue() {
       setIsLoading(true);
+      setError("");
       try {
         const response = await fetch("/api/admin/verification-queue", { cache: "no-store" });
         const result = await response.json() as ApiResult<Application[]>;
@@ -248,13 +249,23 @@ export default function AdminPage() {
             <p className="admin-eyebrow">Doctor onboarding</p>
             <h1>Verification queue</h1>
           </div>
-          <p className="admin-queue-count" aria-live="polite">{applications.length} pending</p>
+          {!error && <p className="admin-queue-count" aria-live="polite">{applications.length} pending</p>}
         </div>
 
         {notice && <p className="admin-notice" role="status">{notice}</p>}
         {error && <p className="admin-error" role="alert">{error}</p>}
+        {error && isAuthenticated && !isLoading && (
+          <button className="admin-signout" type="button" onClick={() => setRefreshKey((value) => value + 1)}>
+            Retry queue
+          </button>
+        )}
         {isLoading ? (
           <p className="admin-muted" role="status">Loading applications...</p>
+        ) : error && applications.length === 0 ? (
+          <section className="admin-empty-state">
+            <h2>Queue unavailable</h2>
+            <p>The verification queue could not be loaded.</p>
+          </section>
         ) : applications.length === 0 ? (
           <section className="admin-empty-state">
             <h2>Queue clear</h2>

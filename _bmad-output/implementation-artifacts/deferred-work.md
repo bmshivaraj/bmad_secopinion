@@ -77,3 +77,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-2-4-admin-manages-specialty-catalog.md`
   summary: Apply the Specialty normalized-name migration against PostgreSQL and verify backfill, Doctor-Specialty relationships, and case-only duplicate rejection.
   evidence: The migration could not be applied because PostgreSQL rejected the configured credentials with `P1000`; the shipped 15 default names are unique after normalization, but deployed database contents and data relationships could not be inspected.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-describe-condition-upload-documents.md`
+  summary: Apply the Case/Document migration and verify production Prisma draft and document persistence against PostgreSQL.
+  evidence: Prisma validation and client generation pass, but migration status returns `P1000`; a working PostgreSQL test database is required to verify migration application and repository create/update/read behavior.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-1-describe-condition-upload-documents.md`
+  summary: Load-test concurrent authenticated 50 MiB document uploads under the intended application memory limit.
+  evidence: The parser enforces a streaming 50 MiB cap and avoids an extra whole-body buffer, but concurrent multipart parsing and storage allocations have not been measured at deployment concurrency.

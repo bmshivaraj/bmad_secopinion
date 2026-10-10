@@ -24,6 +24,12 @@ enum DoctorVerificationStatus {
   @@map("doctor_verification_status")
 }
 
+enum CaseStatus {
+  Draft
+
+  @@map("case_status")
+}
+
 // Admin-extensible reference table (AD-15). Doctor.specialties (added in a later story)
 // will be a many-to-many join against this table.
 model Specialty {
@@ -116,4 +122,35 @@ model Patient {
   updatedAt            DateTime              @updatedAt @map("updated_at")
 
   @@map("patients")
+}
+
+model Case {
+  id                 String       @id @default(uuid())
+  creationRequestId  String       @unique @map("creation_request_id")
+  patientId          String       @map("patient_id")
+  affectedBodyArea   String       @map("affected_body_area")
+  condition          String
+  recommendation     String
+  additionalDetails String       @default("") @map("additional_details")
+  status             CaseStatus   @default(Draft)
+  documents          CaseDocument[]
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+
+  @@index([patientId, status, updatedAt])
+  @@map("cases")
+}
+
+model CaseDocument {
+  id          String   @id @default(uuid())
+  caseId      String   @map("case_id")
+  fileName    String   @map("file_name")
+  contentType String   @map("content_type")
+  sizeBytes   Int      @map("size_bytes")
+  storageKey  String   @unique @map("storage_key")
+  case        Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([caseId, createdAt])
+  @@map("case_documents")
 }

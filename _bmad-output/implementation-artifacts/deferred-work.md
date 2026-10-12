@@ -85,3 +85,19 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-1-describe-condition-upload-documents.md`
   summary: Load-test concurrent authenticated 50 MiB document uploads under the intended application memory limit.
   evidence: The parser enforces a streaming 50 MiB cap and avoids an extra whole-body buffer, but concurrent multipart parsing and storage allocations have not been measured at deployment concurrency.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-optional-doctor-selection.md`
+  summary: Revalidate a saved selected Doctor through the Doctors service at Story 3.3 submission before assigning `Case.doctorId`.
+  evidence: Story 3.2 verifies status when saving the draft preference, but Admin can later revoke a Doctor before payment/submission; revalidation belongs at the submission transition and avoids assigning a no-longer-Verified Doctor.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-optional-doctor-selection.md`
+  summary: Define and test pagination/search for the verified Doctor directory if its expected size or latency target requires it.
+  evidence: The current directory returns all verified Doctors and no catalog-size or response-time target is defined; establish expected scale before adding list parameters and UI complexity.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-optional-doctor-selection.md`
+  summary: Verify selectedDoctorId persistence and migration behavior against PostgreSQL.
+  evidence: Prisma schema validation and client generation pass, but migration status fails with `P1000`; a working database and draft reload assertion are required.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-3-2-optional-doctor-selection.md`
+  summary: Add automated browser coverage for selecting, saving, reloading, and clearing a Doctor preference when browser-test infrastructure is available.
+  evidence: Current tests cover the Doctors service, Cases service, and routes, but the repo has no UI test harness and the integrated browser tool returned a CDP connection timeout during this verification attempt.

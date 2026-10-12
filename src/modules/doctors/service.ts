@@ -39,6 +39,7 @@ import {
 	type DoctorAccount,
 	type DoctorApplication,
 	type DoctorCredentialRecord,
+	type DoctorDirectoryEntry,
 	type DoctorSummary,
 	type SpecialtySummary,
 } from "./domain";
@@ -64,6 +65,7 @@ type DoctorsRepository = Pick<
 	| "findByMobileNumber"
 	| "findByUsername"
 	| "findById"
+	| "listVerifiedDoctors"
 	| "findPayoutProfile"
 	| "updateUpiId"
 	| "findActiveSpecialties"
@@ -243,6 +245,10 @@ export function createDoctorsService(
 
 		async listActiveSpecialties(): Promise<SpecialtySummary[]> {
 			return repository.listActiveSpecialties();
+		},
+
+		async listVerifiedDoctors(): Promise<DoctorDirectoryEntry[]> {
+			return repository.listVerifiedDoctors();
 		},
 
 		async createSpecialty(name: string): Promise<SpecialtySummary> {

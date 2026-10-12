@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-23-2026 00:00
-last_updated: 10-10-2026 18:42
+last_updated: 10-12-2026 14:29
 project: secopinion
 project_key: NOKEY
 tracking_system: file-system
@@ -51,7 +51,7 @@ development_status:
 
   epic-3: in-progress
   3-1-describe-condition-upload-documents: review
-  3-2-optional-doctor-selection: backlog
+  3-2-optional-doctor-selection: review
   3-3-urgency-selection-payment: backlog
   epic-3-retrospective: optional
 

@@ -8,6 +8,12 @@ export interface SpecialtySummary {
 	name: string;
 }
 
+export interface DoctorDirectoryEntry {
+	id: string;
+	fullName: string;
+	specialties: string[];
+}
+
 export interface DoctorCredentialRecord {
 	id: string;
 	doctorId: string;

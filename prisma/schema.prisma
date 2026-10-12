@@ -132,6 +132,7 @@ model Case {
   condition          String
   recommendation     String
   additionalDetails String       @default("") @map("additional_details")
+  selectedDoctorId  String?      @map("selected_doctor_id")
   status             CaseStatus   @default(Draft)
   documents          CaseDocument[]
   createdAt          DateTime     @default(now()) @map("created_at")

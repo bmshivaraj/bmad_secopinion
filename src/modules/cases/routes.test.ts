@@ -7,10 +7,13 @@ process.env.JWT_SECRET ??= "cases-route-test-secret";
 const {
 	parseCaseDocumentUploads,
 	parseCaseDraftRequest,
+	parseDoctorSelectionRequest,
 	requireDocumentReaderContext,
 	requirePatientContext,
 } = await import("./routes");
 const { GET: getDocumentRoute } = await import("../../app/api/cases/documents/[documentId]/route");
+const { GET: getDoctorDirectoryRoute } = await import("../../app/api/cases/doctors/route");
+const { PATCH: patchDoctorSelectionRoute } = await import("../../app/api/cases/[caseId]/selection/route");
 const { casesService } = await import("./service");
 const { CaseAccessDeniedError } = await import("./domain");
 const { signAuthToken } = await import("../../shared/auth-context");
@@ -27,6 +30,93 @@ test("draft parser accepts the approved fields and rejects malformed JSON shapes
 		creationRequestId: "123e4567-e89b-42d3-a456-426614174000",
 	});
 	await assert.rejects(parseCaseDraftRequest(new Request("http://localhost", { method: "PUT", body: "[]" })), { code: "VALIDATION_ERROR" });
+	assert.equal(await parseDoctorSelectionRequest(new Request("http://localhost", {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ selectedDoctorId: null }),
+	})), null);
+	await assert.rejects(parseDoctorSelectionRequest(new Request("http://localhost", {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ selectedDoctorId: " " }),
+	})), { code: "VALIDATION_ERROR" });
+});
+
+test("Doctor directory and draft selection routes require Patient auth and return private envelopes", async () => {
+	const originalMethods = {
+		listVerifiedDoctors: casesService.listVerifiedDoctors,
+		saveDraftDoctorSelection: casesService.saveDraftDoctorSelection,
+	};
+	let savedSelection: string | null = null;
+	let savedOwner = "";
+	casesService.listVerifiedDoctors = async () => [{ id: "doctor-1", fullName: "Dr. Public", specialties: ["Cardiology"] }];
+	casesService.saveDraftDoctorSelection = async (caller, caseId, selectedDoctorId) => {
+		savedOwner = caller.userId;
+		savedSelection = selectedDoctorId;
+		const now = new Date();
+		return {
+			id: caseId,
+			affectedBodyArea: "Knee",
+			condition: "Pain",
+			recommendation: "Review",
+			additionalDetails: "",
+			selectedDoctorId,
+			status: "Draft",
+			documents: [],
+			createdAt: now,
+			updatedAt: now,
+		};
+	};
+
+	try {
+		const patientToken = signAuthToken({ userId: "patient-1", role: "patient" });
+		const directoryResponse = await getDoctorDirectoryRoute(new Request("http://localhost/api/cases/doctors", {
+			headers: { cookie: `patient_session=${patientToken}` },
+		}));
+		assert.equal(directoryResponse.status, 200);
+		assert.equal(directoryResponse.headers.get("cache-control"), "private, no-store");
+		assert.deepEqual((await directoryResponse.json() as { data: unknown }).data, [
+			{ id: "doctor-1", fullName: "Dr. Public", specialties: ["Cardiology"] },
+		]);
+
+		const unauthorized = await getDoctorDirectoryRoute(new Request("http://localhost/api/cases/doctors"));
+		assert.equal(unauthorized.status, 401);
+		assert.equal(unauthorized.headers.get("cache-control"), "private, no-store");
+
+		const selectionResponse = await patchDoctorSelectionRoute(new Request("http://localhost/api/cases/case-1/selection", {
+			method: "PATCH",
+			headers: { cookie: `patient_session=${patientToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ selectedDoctorId: "doctor-1" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(selectionResponse.status, 200);
+		assert.equal(selectionResponse.headers.get("cache-control"), "private, no-store");
+		assert.equal(savedOwner, "patient-1");
+		assert.equal(savedSelection, "doctor-1");
+		assert.equal((await selectionResponse.json() as { data: { selectedDoctorId: string } }).data.selectedDoctorId, "doctor-1");
+
+		const unauthenticatedSelection = await patchDoctorSelectionRoute(new Request("http://localhost/api/cases/case-1/selection", {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ selectedDoctorId: "doctor-1" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(unauthenticatedSelection.status, 401);
+		const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
+		const wrongRoleSelection = await patchDoctorSelectionRoute(new Request("http://localhost/api/cases/case-1/selection", {
+			method: "PATCH",
+			headers: { cookie: `doctor_session=${doctorToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ selectedDoctorId: "doctor-1" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(wrongRoleSelection.status, 401);
+
+		const invalidSelection = await patchDoctorSelectionRoute(new Request("http://localhost/api/cases/case-1/selection", {
+			method: "PATCH",
+			headers: { cookie: `patient_session=${patientToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ selectedDoctorId: " " }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(invalidSelection.status, 400);
+	} finally {
+		Object.assign(casesService, originalMethods);
+	}
 });
 
 test("multipart parser accepts five documents and rejects batches above five", async () => {

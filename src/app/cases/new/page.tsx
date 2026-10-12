@@ -22,10 +22,17 @@ interface CaseDraft {
 	condition: string;
 	recommendation: string;
 	additionalDetails: string;
+	selectedDoctorId: string | null;
 	status: "Draft";
 	documents: CaseDocument[];
 	createdAt: string;
 	updatedAt: string;
+}
+
+interface DoctorDirectoryEntry {
+	id: string;
+	fullName: string;
+	specialties: string[];
 }
 
 interface DraftFields {
@@ -71,18 +78,23 @@ export default function NewCasePage() {
 	const [fields, setFields] = useState<DraftFields>(EMPTY_FIELDS);
 	const creationRequestId = useRef<string | null>(null);
 	const [draft, setDraft] = useState<CaseDraft | null>(null);
+	const [doctors, setDoctors] = useState<DoctorDirectoryEntry[]>([]);
+	const [selectedDoctorId, setSelectedDoctorId] = useState<string | null>(null);
 	const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 	const [fileInputVersion, setFileInputVersion] = useState(0);
 	const [isLoading, setIsLoading] = useState(true);
 	const [isBusy, setIsBusy] = useState(false);
 	const [error, setError] = useState("");
 	const [notice, setNotice] = useState("");
+	const [isLoadingDoctors, setIsLoadingDoctors] = useState(true);
+	const [doctorDirectoryError, setDoctorDirectoryError] = useState("");
 
 	useEffect(() => {
 		requestApi<CaseDraft | null>("/api/cases/draft")
 			.then((savedDraft) => {
 				if (!savedDraft) return;
 				setDraft(savedDraft);
+				setSelectedDoctorId(savedDraft.selectedDoctorId);
 				setFields({
 					affectedBodyArea: savedDraft.affectedBodyArea,
 					condition: savedDraft.condition,
@@ -92,6 +104,13 @@ export default function NewCasePage() {
 			})
 			.catch((loadError: unknown) => setError(errorMessage(loadError)))
 			.finally(() => setIsLoading(false));
+	}, []);
+
+	useEffect(() => {
+		requestApi<DoctorDirectoryEntry[]>("/api/cases/doctors")
+			.then(setDoctors)
+			.catch((loadError: unknown) => setDoctorDirectoryError(errorMessage(loadError)))
+			.finally(() => setIsLoadingDoctors(false));
 	}, []);
 
 	function updateField(field: keyof DraftFields, value: string) {
@@ -199,6 +218,35 @@ export default function NewCasePage() {
 		}
 	}
 
+	async function persistDoctorSelection(doctorId: string | null) {
+		if (!draft) {
+			setError("Save your condition details before choosing a Doctor.");
+			return;
+		}
+		setError("");
+		setNotice("");
+		setIsBusy(true);
+		try {
+			const savedDraft = await requestApi<CaseDraft>(`/api/cases/${draft.id}/selection`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ selectedDoctorId: doctorId }),
+			});
+			setDraft(savedDraft);
+			setSelectedDoctorId(savedDraft.selectedDoctorId);
+			setNotice(doctorId ? "Doctor preference saved to your private draft." : "Doctor preference cleared.");
+		} catch (selectionError) {
+			setError(errorMessage(selectionError));
+		} finally {
+			setIsBusy(false);
+		}
+	}
+
+	async function handleSaveDoctorSelection(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		await persistDoctorSelection(selectedDoctorId);
+	}
+
 	return (
 		<main className="case-page">
 			<header className="case-topbar">
@@ -292,6 +340,49 @@ export default function NewCasePage() {
 							) : (
 								<p className="case-no-documents">No supporting documents uploaded yet.</p>
 							)}
+						</section>
+
+						<section className="case-doctor-selection" aria-labelledby="case-doctor-selection-heading">
+							<div className="case-section-heading">
+								<span className="case-step-number">03</span>
+								<div>
+									<h2 id="case-doctor-selection-heading">Choose a Doctor <span>Optional</span></h2>
+									<p>Your preference stays private with this draft. You can also continue without choosing.</p>
+								</div>
+							</div>
+							{isLoadingDoctors ? (
+								<p className="case-doctor-state" role="status">Loading verified Doctors...</p>
+							) : doctorDirectoryError ? (
+								<p className="case-doctor-state case-doctor-state-error" role="alert">{doctorDirectoryError}</p>
+							) : doctors.length === 0 ? (
+								<p className="case-doctor-state">No verified Doctors are available right now. You can continue without a selection.</p>
+							) : (
+								<form className="case-doctor-form" onSubmit={handleSaveDoctorSelection}>
+									<fieldset className="case-doctor-list" disabled={isBusy || !draft}>
+										<legend className="case-visually-hidden">Doctor preference</legend>
+										<label className="case-doctor-option">
+											<input type="radio" name="doctor-preference" checked={selectedDoctorId === null} onChange={() => setSelectedDoctorId(null)} />
+											<span><strong>No preference</strong><small>Keep this Case unassigned for now.</small></span>
+										</label>
+										{doctors.map((doctor) => (
+											<label className="case-doctor-option" key={doctor.id}>
+												<input type="radio" name="doctor-preference" checked={selectedDoctorId === doctor.id} onChange={() => setSelectedDoctorId(doctor.id)} />
+												<span><strong>{doctor.fullName}</strong><small>{doctor.specialties.join(" · ")}</small></span>
+											</label>
+										))}
+									</fieldset>
+									{!draft && <p className="case-doctor-state">Save your draft before saving a Doctor preference.</p>}
+									{draft?.selectedDoctorId && !doctors.some(({ id }) => id === draft.selectedDoctorId) && (
+										<p className="case-doctor-state case-doctor-state-error">Your saved Doctor is no longer available. Clear the preference or choose another verified Doctor.</p>
+									)}
+									<div className="case-doctor-actions">
+										<button className="case-button case-button-secondary" type="submit" disabled={isBusy || !draft}>
+											{isBusy ? "Saving..." : "Save preference"}
+										</button>
+									</div>
+								</form>
+							)}
+							{draft?.selectedDoctorId && <button className="case-remove-button case-doctor-clear" type="button" disabled={isBusy} onClick={() => void persistDoctorSelection(null)}>Clear selection</button>}
 						</section>
 
 						<section className="case-next-step" aria-labelledby="case-next-step-heading">

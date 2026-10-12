@@ -53,6 +53,23 @@ export const doctorsRepository = {
 		return record ? mapAccount(record) : null;
 	},
 
+	async listVerifiedDoctors(): Promise<{ id: string; fullName: string; specialties: string[] }[]> {
+		const records = await prisma.doctor.findMany({
+			where: { verificationStatus: "Verified" },
+			select: {
+				id: true,
+				fullName: true,
+				specialties: { select: { specialty: { select: { name: true } } } },
+			},
+			orderBy: { fullName: "asc" },
+		});
+		return records.map(({ id, fullName, specialties }) => ({
+			id,
+			fullName,
+			specialties: specialties.map(({ specialty }) => specialty.name),
+		}));
+	},
+
 	async findPayoutProfile(doctorId: string): Promise<{ upiId: string | null } | null> {
 		return prisma.doctor.findUnique({ where: { id: doctorId }, select: { upiId: true } });
 	},

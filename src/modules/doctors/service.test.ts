@@ -95,6 +95,41 @@ test("Specialty repository creates active rows and lists only active names alpha
   }
 });
 
+test("verified Doctor directory repository filters status and selects only patient-facing fields", async () => {
+  const doctorDelegate = prisma.doctor as unknown as {
+    findMany: (args: unknown) => Promise<{ id: string; fullName: string; specialties: { specialty: { name: string } }[] }[]>;
+  };
+  const originalFindMany = doctorDelegate.findMany;
+  let query: unknown;
+  doctorDelegate.findMany = async (args) => {
+    query = args;
+    return [{
+      id: "doctor-1",
+      fullName: "Dr. Visible",
+      specialties: [{ specialty: { name: "Cardiology" } }],
+    }];
+  };
+
+  try {
+    assert.deepEqual(await doctorsRepository.listVerifiedDoctors(), [{
+      id: "doctor-1",
+      fullName: "Dr. Visible",
+      specialties: ["Cardiology"],
+    }]);
+    assert.deepEqual(query, {
+      where: { verificationStatus: "Verified" },
+      select: {
+        id: true,
+        fullName: true,
+        specialties: { select: { specialty: { select: { name: true } } } },
+      },
+      orderBy: { fullName: "asc" },
+    });
+  } finally {
+    doctorDelegate.findMany = originalFindMany;
+  }
+});
+
 function createFixture(options: {
   specialties?: SpecialtySummary[];
   expiresAt?: Date;
@@ -117,6 +152,16 @@ function createFixture(options: {
     },
     async findById(doctorId: string): Promise<DoctorAccount | null> {
       return [...applications.values()].find((doctor) => doctor.id === doctorId) ?? null;
+    },
+    async listVerifiedDoctors() {
+      return [...applications.values()]
+        .filter(({ verificationStatus }) => verificationStatus === "Verified")
+        .map(({ id, fullName, specialties: doctorSpecialties }) => ({
+          id,
+          fullName,
+          specialties: doctorSpecialties.map(({ name }) => name),
+        }))
+        .sort((left, right) => left.fullName.localeCompare(right.fullName));
     },
     async findPayoutProfile(doctorId: string): Promise<{ upiId: string | null } | null> {
       const doctor = applications.get(doctorId);
@@ -809,4 +854,25 @@ test("rejected Doctors remain ineligible and cannot receive a second decision", 
     { code: "DOCTOR_VERIFICATION_CONFLICT" },
   );
   assert.equal(fixture.applications.get(application.doctorId)?.verificationStatus, "Rejected");
+});
+
+test("Patient Doctor directory returns only verified names and specialty names", async () => {
+  const fixture = createFixture();
+  const firstApplicant = await authorizeApplicant(fixture);
+  const first = await fixture.service.submitApplication(firstApplicant.registrationToken, validInput());
+  const secondApplicant = await authorizeApplicant(fixture);
+  const second = await fixture.service.submitApplication(secondApplicant.registrationToken, {
+    ...validInput(),
+    username: "another_doctor",
+  });
+  const firstRecord = fixture.applications.get(first.doctorId)!;
+  const secondRecord = fixture.applications.get(second.doctorId)!;
+  fixture.applications.set(first.doctorId, { ...firstRecord, verificationStatus: "Verified" });
+  fixture.applications.set(second.doctorId, { ...secondRecord, verificationStatus: "Rejected" });
+
+  assert.deepEqual(await fixture.service.listVerifiedDoctors(), [{
+    id: first.doctorId,
+    fullName: "Dr. Asha Mehta",
+    specialties: ["Cardiology", "Neurology"],
+  }]);
 });

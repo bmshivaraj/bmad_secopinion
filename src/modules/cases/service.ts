@@ -1,9 +1,11 @@
 import type { AuthContext } from "../../shared/auth-context";
 import { randomUUID } from "node:crypto";
+import { doctorsService } from "../doctors/service";
 import { storageProvider } from "../../shared/storage-provider";
 import type { StorageProvider } from "../../shared/storage-provider";
 import {
 	CaseAccessDeniedError,
+	CaseDoctorSelectionConflictError,
 	CaseDocumentNotFoundError,
 	CaseDocumentRequiredError,
 	CaseNotFoundError,
@@ -23,8 +25,10 @@ const ACCEPTED_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "application/
 
 type CasesRepository = Pick<
 	typeof casesRepository,
-	"createDraft" | "findByCreationRequestId" | "findLatestDraft" | "updateDraft" | "findById" | "createDocuments" | "findDocumentById" | "deleteDocument"
+	"createDraft" | "findByCreationRequestId" | "findLatestDraft" | "updateDraft" | "updateDraftDoctorSelection" | "findById" | "createDocuments" | "findDocumentById" | "deleteDocument"
 >;
+
+type DoctorsService = Pick<typeof doctorsService, "listVerifiedDoctors" | "getVerifiedDoctor">;
 
 function isUniqueConstraintViolation(error: unknown): boolean {
 	return typeof error === "object" && error !== null && "code" in error && error.code === "P2002";
@@ -116,6 +120,7 @@ function publicDraft(record: CaseRecord) {
 		condition: record.condition,
 		recommendation: record.recommendation,
 		additionalDetails: record.additionalDetails,
+		selectedDoctorId: record.selectedDoctorId,
 		status: record.status,
 		documents: record.documents.map(publicDocument),
 		createdAt: record.createdAt,
@@ -131,8 +136,14 @@ function assertDraftOwner(record: CaseRecord | null, patientId: string): asserts
 export function createCasesService(
 	repository: CasesRepository = casesRepository,
 	storage: StorageProvider = storageProvider,
+	doctors: DoctorsService = doctorsService,
 ) {
 	return {
+		async listVerifiedDoctors(caller: AuthContext) {
+			assertPatient(caller);
+			return doctors.listVerifiedDoctors();
+		},
+
 		async getOwnDraft(caller: AuthContext) {
 			assertPatient(caller);
 			const record = await repository.findLatestDraft(caller.userId);
@@ -170,6 +181,31 @@ export function createCasesService(
 				if (!updated) throw new CaseNotFoundError();
 				return publicDraft(updated);
 			}
+		},
+
+		async saveDraftDoctorSelection(caller: AuthContext, caseId: string, selectedDoctorId: string | null) {
+			assertPatient(caller);
+			if (typeof selectedDoctorId !== "string" && selectedDoctorId !== null) {
+				throw new InvalidCaseInputError("selectedDoctorId must be a string or null.");
+			}
+			const normalizedDoctorId = typeof selectedDoctorId === "string" ? selectedDoctorId.trim() : null;
+			if (typeof selectedDoctorId === "string" && !normalizedDoctorId) {
+				throw new InvalidCaseInputError("selectedDoctorId must be a non-empty string or null.");
+			}
+
+			const existing = await repository.findById(caseId);
+			assertDraftOwner(existing, caller.userId);
+			if (normalizedDoctorId !== null && !await doctors.getVerifiedDoctor(normalizedDoctorId)) {
+				throw new CaseDoctorSelectionConflictError();
+			}
+
+			const updated = await repository.updateDraftDoctorSelection(caseId, caller.userId, normalizedDoctorId);
+			if (!updated) {
+				const current = await repository.findById(caseId);
+				assertDraftOwner(current, caller.userId);
+				throw new CaseNotFoundError();
+			}
+			return publicDraft(updated);
 		},
 
 		async uploadDocuments(caller: AuthContext, caseId: string, uploads: CaseDocumentUpload[]) {

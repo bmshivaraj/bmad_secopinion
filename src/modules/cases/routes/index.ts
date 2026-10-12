@@ -73,6 +73,23 @@ export async function parseCaseDraftRequest(request: Request): Promise<{ input: 
 	};
 }
 
+export async function parseDoctorSelectionRequest(request: Request): Promise<string | null> {
+	let body: unknown;
+	try {
+		body = await request.json();
+	} catch {
+		throw new InvalidCaseInputError("Request body must be valid JSON.");
+	}
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		throw new InvalidCaseInputError("Request body must be a JSON object.");
+	}
+	const selectedDoctorId = (body as Record<string, unknown>).selectedDoctorId;
+	if (selectedDoctorId !== null && (typeof selectedDoctorId !== "string" || !selectedDoctorId.trim())) {
+		throw new InvalidCaseInputError("selectedDoctorId must be a non-empty string or null.");
+	}
+	return typeof selectedDoctorId === "string" ? selectedDoctorId.trim() : null;
+}
+
 export async function parseCaseDocumentUploads(request: Request): Promise<CaseDocumentUpload[]> {
 	const contentLength = Number(request.headers.get("content-length"));
 	if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_SIZE) {
@@ -147,13 +164,20 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	CASE_NOT_FOUND: 404,
 	CASE_DOCUMENT_NOT_FOUND: 404,
 	CASE_DOCUMENT_REQUIRED: 409,
+	CASE_DOCTOR_SELECTION_CONFLICT: 409,
 	UPLOAD_TOO_LARGE: 413,
 };
 
 export function toCasesErrorResponse(error: unknown): NextResponse {
 	if (error instanceof DomainError) {
-		return NextResponse.json(fail(error.code, error.message), { status: STATUS_BY_ERROR_CODE[error.code] ?? 400 });
+		return NextResponse.json(fail(error.code, error.message), {
+			status: STATUS_BY_ERROR_CODE[error.code] ?? 400,
+			headers: { "cache-control": "private, no-store" },
+		});
 	}
 	console.error("[cases] unexpected error", error);
-	return NextResponse.json(fail("INTERNAL_ERROR", "An unexpected error occurred."), { status: 500 });
+	return NextResponse.json(fail("INTERNAL_ERROR", "An unexpected error occurred."), {
+		status: 500,
+		headers: { "cache-control": "private, no-store" },
+	});
 }

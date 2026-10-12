@@ -1183,6 +1183,116 @@ a {
   font-size: 13px;
 }
 
+.case-doctor-selection {
+  padding: 28px 0 32px;
+  border-top: 1px solid var(--line);
+}
+
+.case-section-heading h2 span {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.case-doctor-form {
+  padding-left: 38px;
+}
+
+.case-doctor-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.case-doctor-list:disabled {
+  opacity: 0.65;
+}
+
+.case-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.case-doctor-option {
+  display: flex;
+  min-width: 0;
+  min-height: 58px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.case-doctor-option:has(input:checked) {
+  border-color: var(--green);
+  background: #edf6ef;
+}
+
+.case-doctor-option input {
+  width: 17px;
+  min-height: 17px;
+  flex: 0 0 17px;
+  margin: 0;
+  accent-color: var(--green);
+}
+
+.case-doctor-option span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.case-doctor-option strong,
+.case-doctor-option small {
+  overflow-wrap: anywhere;
+}
+
+.case-doctor-option strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.case-doctor-option small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.case-doctor-state {
+  margin: 0 0 0 38px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.case-doctor-state-error {
+  margin-top: 12px;
+  color: #873c2b;
+}
+
+.case-doctor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-top: 15px;
+}
+
+.case-doctor-clear {
+  margin: 14px 0 0 38px;
+  padding-left: 0;
+}
+
 .case-next-step {
   display: flex;
   align-items: center;
@@ -1251,9 +1361,18 @@ a {
   .case-form-actions,
   .case-upload-form,
   .case-document-list,
-  .case-no-documents {
+  .case-no-documents,
+  .case-doctor-form {
     margin-left: 0;
     padding-left: 0;
+  }
+
+  .case-doctor-state {
+    margin-left: 0;
+  }
+
+  .case-doctor-clear {
+    margin-left: 0;
   }
 
   .case-form-actions {

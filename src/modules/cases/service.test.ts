@@ -9,6 +9,8 @@ process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopini
 process.env.JWT_SECRET ??= "cases-auth-test-secret";
 
 const { createCasesService } = await import("./service");
+const { casesRepository } = await import("./repository");
+const { prisma } = await import("../../shared/prisma-client");
 
 const PATIENT: AuthContext = { userId: "patient-a", role: "patient" };
 const OTHER_PATIENT: AuthContext = { userId: "patient-b", role: "patient" };
@@ -41,7 +43,7 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 			if (requestCases.has(creationRequestId)) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
 			const now = new Date();
 			const record: CaseRecord = {
-				id: randomUUID(), patientId, ...input, status: "Draft", documents: [], createdAt: now, updatedAt: now,
+				id: randomUUID(), patientId, ...input, selectedDoctorId: null, status: "Draft", documents: [], createdAt: now, updatedAt: now,
 			};
 			cases.set(record.id, record);
 			requestCases.set(creationRequestId, record.id);
@@ -59,6 +61,13 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 			const record = cases.get(caseId);
 			if (!record || record.patientId !== patientId || record.status !== "Draft") return null;
 			const updated = { ...record, ...input, updatedAt: new Date() };
+			cases.set(caseId, updated);
+			return updated;
+		},
+		async updateDraftDoctorSelection(caseId: string, patientId: string, selectedDoctorId: string | null): Promise<CaseRecord | null> {
+			const record = cases.get(caseId);
+			if (!record || record.patientId !== patientId || record.status !== "Draft") return null;
+			const updated = { ...record, selectedDoctorId, updatedAt: new Date() };
 			cases.set(caseId, updated);
 			return updated;
 		},
@@ -109,6 +118,31 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 			files.delete(storageKey);
 		},
 	};
+	const verifiedDirectory = [{
+		id: "doctor-verified",
+		fullName: "Dr. Visible",
+		specialties: ["Cardiology"],
+	}];
+	let doctorLookupCalls = 0;
+	const doctors = {
+		async listVerifiedDoctors() {
+			return verifiedDirectory;
+		},
+		async getVerifiedDoctor(doctorId: string) {
+			doctorLookupCalls += 1;
+			if (doctorId !== "doctor-verified") return null;
+			const now = new Date();
+			return {
+				id: doctorId,
+				mobileNumber: "private-mobile",
+				fullName: "Dr. Visible",
+				username: "private-username",
+				verificationStatus: "Verified" as const,
+				createdAt: now,
+				updatedAt: now,
+			};
+		},
+	};
 
 	return {
 		cases,
@@ -117,10 +151,54 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 		deleteCalls,
 		get saveCalls() { return saveCalls; },
 		get readCalls() { return readCalls; },
+		get doctorLookupCalls() { return doctorLookupCalls; },
 		setFailDelete(value: boolean) { failDelete = value; },
-		service: createCasesService(repository, storage),
+		service: createCasesService(repository, storage, doctors),
 	};
 }
+
+test("Patient Doctor directory is verified-only and returns only approved display fields", async () => {
+	const fixture = createFixture();
+	assert.deepEqual(await fixture.service.listVerifiedDoctors(PATIENT), [{
+		id: "doctor-verified",
+		fullName: "Dr. Visible",
+		specialties: ["Cardiology"],
+	}]);
+	await assert.rejects(fixture.service.listVerifiedDoctors(DOCTOR), { code: "SESSION_UNAUTHORIZED" });
+});
+
+test("Doctor preference saves, restores, rejects stale IDs, and can be cleared without assignment", async () => {
+	const fixture = createFixture();
+	const created = await fixture.service.saveDraft(PATIENT, VALID_INPUT);
+	assert.equal(created.selectedDoctorId, null);
+
+	const selected = await fixture.service.saveDraftDoctorSelection(PATIENT, created.id, "doctor-verified");
+	assert.equal(selected.selectedDoctorId, "doctor-verified");
+	assert.equal(fixture.cases.get(created.id)?.selectedDoctorId, "doctor-verified");
+	assert.equal("doctorId" in selected, false);
+	assert.equal((await fixture.service.getOwnDraft(PATIENT))?.selectedDoctorId, "doctor-verified");
+	const normalized = await fixture.service.saveDraftDoctorSelection(PATIENT, created.id, " doctor-verified ");
+	assert.equal(normalized.selectedDoctorId, "doctor-verified");
+
+	for (const doctorId of ["doctor-pending", "doctor-rejected", "doctor-unknown"]) {
+		await assert.rejects(fixture.service.saveDraftDoctorSelection(PATIENT, created.id, doctorId), {
+			code: "CASE_DOCTOR_SELECTION_CONFLICT",
+			message: "The selected Doctor is not verified or available. Choose another Doctor or continue without a preference.",
+		});
+		assert.equal(fixture.cases.get(created.id)?.selectedDoctorId, "doctor-verified");
+	}
+
+	const lookupsBeforeForeignWrite = fixture.doctorLookupCalls;
+	await assert.rejects(fixture.service.saveDraftDoctorSelection(OTHER_PATIENT, created.id, "doctor-verified"), {
+		code: "CASE_ACCESS_DENIED",
+	});
+	assert.equal(fixture.doctorLookupCalls, lookupsBeforeForeignWrite);
+
+	const cleared = await fixture.service.saveDraftDoctorSelection(PATIENT, created.id, null);
+	assert.equal(cleared.selectedDoctorId, null);
+	assert.equal(fixture.cases.get(created.id)?.selectedDoctorId, null);
+	assert.equal((await fixture.service.getOwnDraft(PATIENT))?.selectedDoctorId, null);
+});
 
 test("Patient draft create and update use the verified session owner and preserve only Draft state", async () => {
 	const fixture = createFixture();
@@ -228,4 +306,50 @@ test("failed partial storage or metadata persistence removes every saved byte", 
 	await assert.rejects(databaseFailure.service.uploadDocuments(PATIENT, databaseFailureDraft.id, [upload(), upload()]), /document persistence failed/);
 	assert.equal(databaseFailure.files.size, 0);
 	assert.equal(databaseFailure.deleteCalls.length, 2);
+});
+
+test("selection repository updates only the Patient-owned Draft and returns the selected value", async () => {
+	const caseDelegate = prisma.case as unknown as {
+		updateMany: (args: unknown) => Promise<{ count: number }>;
+		findUnique: (args: unknown) => Promise<unknown>;
+	};
+	const originals = { updateMany: caseDelegate.updateMany, findUnique: caseDelegate.findUnique };
+	const caseId = randomUUID();
+	let updateArgs: unknown;
+	let findArgs: unknown;
+	caseDelegate.updateMany = async (args) => {
+		updateArgs = args;
+		return { count: 1 };
+	};
+	caseDelegate.findUnique = async (args) => {
+		findArgs = args;
+		return {
+			id: caseId,
+			patientId: PATIENT.userId,
+			affectedBodyArea: "Knee",
+			condition: "Pain",
+			recommendation: "Review",
+			additionalDetails: "",
+			selectedDoctorId: "doctor-verified",
+			status: "Draft",
+			documents: [],
+			createdAt: new Date(),
+			updatedAt: new Date(),
+		};
+	};
+	try {
+		const updated = await casesRepository.updateDraftDoctorSelection(caseId, PATIENT.userId, "doctor-verified");
+		assert.equal(updated?.selectedDoctorId, "doctor-verified");
+		assert.deepEqual(updateArgs, {
+			where: { id: caseId, patientId: PATIENT.userId, status: "Draft" },
+			data: { selectedDoctorId: "doctor-verified" },
+		});
+		assert.deepEqual(findArgs, {
+			where: { id: caseId },
+			include: { documents: { orderBy: { createdAt: "asc" } } },
+		});
+	} finally {
+		caseDelegate.updateMany = originals.updateMany;
+		caseDelegate.findUnique = originals.findUnique;
+	}
 });

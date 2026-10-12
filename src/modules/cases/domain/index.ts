@@ -17,6 +17,7 @@ export interface CaseRecord {
 	condition: string;
 	recommendation: string;
 	additionalDetails: string;
+	selectedDoctorId: string | null;
 	status: "Draft";
 	createdAt: Date;
 	updatedAt: Date;
@@ -65,6 +66,14 @@ export class CaseNotFoundError extends DomainError {
 
 	constructor() {
 		super("Case not found.");
+	}
+}
+
+export class CaseDoctorSelectionConflictError extends DomainError {
+	readonly code = "CASE_DOCTOR_SELECTION_CONFLICT";
+
+	constructor() {
+		super("The selected Doctor is not verified or available. Choose another Doctor or continue without a preference.");
 	}
 }
 

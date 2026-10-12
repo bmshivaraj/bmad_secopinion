@@ -30,6 +30,19 @@ export const casesRepository = {
 		return prisma.case.findUnique({ where: { id: caseId }, include: draftInclude });
 	},
 
+	async updateDraftDoctorSelection(
+		caseId: string,
+		patientId: string,
+		selectedDoctorId: string | null,
+	): Promise<CaseRecord | null> {
+		const updated = await prisma.case.updateMany({
+			where: { id: caseId, patientId, status: "Draft" },
+			data: { selectedDoctorId },
+		});
+		if (updated.count === 0) return null;
+		return prisma.case.findUnique({ where: { id: caseId }, include: draftInclude });
+	},
+
 	async findById(caseId: string): Promise<CaseRecord | null> {
 		return prisma.case.findUnique({ where: { id: caseId }, include: draftInclude });
 	},

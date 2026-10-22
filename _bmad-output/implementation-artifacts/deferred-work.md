@@ -125,3 +125,23 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-4-submit-opinion-and-close-case.md`
   summary: Add page-level tests for Doctor Opinion submission and Patient/Admin Opinion rendering when a UI test harness is available.
   evidence: The repository has no page/browser test harness; route and service tests do not mount or interact with the Doctor, Patient, or Admin Opinion surfaces.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-daily-sla-breach-detection-refund-pending.md`
+  summary: Report invalid SLA-history candidates skipped by the daily breach scan and define remediation for those Cases.
+  evidence: `computeElapsedSlaTime()` returns `null` for malformed pause history; the scan safely skips such a Case but currently logs only total scanned and transitioned counts, so operators cannot identify it from job output.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-daily-sla-breach-detection-refund-pending.md`
+  summary: Establish expected daily SLA-candidate volume and job runtime, then add bounded scanning if the measured workload requires it.
+  evidence: The repository currently loads all paid open candidates into memory and processes them sequentially; no maximum volume or runtime target is defined, so capacity evidence is needed to choose batching semantics.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-daily-sla-breach-detection-refund-pending.md`
+  summary: Define Admin RefundPending worklist pagination after setting an expected queue size and response-time target.
+  evidence: The repository and Admin page currently load all pending refunds; no queue-volume or latency target exists to establish a user-facing failure threshold.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-daily-sla-breach-detection-refund-pending.md`
+  summary: Verify RefundPending compare-and-swap behavior with a PostgreSQL-backed competing-transition test.
+  evidence: Service tests cover races and the repository uses a conditional status update, but configured PostgreSQL credentials fail with `P1000`, so production database concurrency behavior remains unverified.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-1-daily-sla-breach-detection-refund-pending.md`
+  summary: Add Admin RefundPending page rendering and refresh-state tests when UI test infrastructure is available.
+  evidence: Existing route tests verify private API fields but do not render the worklist; the repository has no page/browser test harness.

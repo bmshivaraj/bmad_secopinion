@@ -33,6 +33,7 @@ const { GET: getPatientCasesRoute } = await import("../../app/api/cases/route");
 const { POST: postDocumentRequestRoute } = await import("../../app/api/cases/[caseId]/document-requests/route");
 const { POST: postCaseOpinionRoute } = await import("../../app/api/cases/[caseId]/opinion/route");
 const { GET: getAdminCaseOpinionRoute } = await import("../../app/api/admin/cases/[caseId]/opinion/route");
+const { GET: getAdminRefundCasesRoute } = await import("../../app/api/admin/cases/refunds/route");
 const { casesService } = await import("./service");
 const { CaseAccessDeniedError, CaseAssignmentVersionConflictError } = await import("./domain");
 const { signAuthToken } = await import("../../shared/auth-context");
@@ -481,6 +482,40 @@ test("Admin Opinion route authenticates Admin and returns private Case Opinion d
 		assert.equal(denied.status, 403);
 	} finally {
 		casesService.getAdminOpinion = originalGetAdminOpinion;
+	}
+});
+
+test("Admin RefundPending route returns captured amounts privately and rejects non-Admin callers", async () => {
+	const originalListRefundPendingCases = casesService.listRefundPendingCases;
+	let listedBy = "";
+	casesService.listRefundPendingCases = async (caller) => {
+		listedBy = caller.userId;
+		return [{
+			id: "case-refund-pending",
+			affectedBodyArea: "Knee",
+			urgencyTier: "Urgent",
+			doctorId: null,
+			submittedAt: "2026-10-22T12:00:00.000Z",
+			chargedAmount: "2000.00",
+		}];
+	};
+	try {
+		const adminToken = signAuthToken({ userId: "admin-1", role: "admin" });
+		const response = await getAdminRefundCasesRoute(new Request("http://localhost/api/admin/cases/refunds", {
+			headers: { cookie: `admin_session=${adminToken}` },
+		}));
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("cache-control"), "private, no-store");
+		assert.equal(listedBy, "admin-1");
+		assert.equal((await response.json() as { data: { chargedAmount: string }[] }).data[0].chargedAmount, "2000.00");
+
+		const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
+		const denied = await getAdminRefundCasesRoute(new Request("http://localhost/api/admin/cases/refunds", {
+			headers: { cookie: `admin_session=${doctorToken}` },
+		}));
+		assert.equal(denied.status, 403);
+	} finally {
+		casesService.listRefundPendingCases = originalListRefundPendingCases;
 	}
 });
 

@@ -61,6 +61,11 @@ export interface CaseRecord {
 	opinion?: CaseOpinionRecord | null;
 }
 
+export type CaseSlaCandidateRecord = Pick<CaseRecord, "id" | "status" | "slaPauseHistory"> & {
+	submittedAt: Date;
+	chargedAmount: Prisma.Decimal;
+};
+
 export interface CaseDraftInput {
 	affectedBodyArea: string;
 	condition: string;

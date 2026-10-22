@@ -10,8 +10,9 @@ import type { PaymentAttempt } from "../payments/domain";
 process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopinion_test";
 process.env.JWT_SECRET ??= "cases-auth-test-secret";
 
-const { createCasesService } = await import("./service");
+const { casesService, createCasesService } = await import("./service");
 const { casesRepository } = await import("./repository");
+const { runCaseSlaBreachJob, startDailyCaseSlaBreachJob } = await import("./sla-breach-job");
 const { prisma } = await import("../../shared/prisma-client");
 const { PaymentDeclinedError } = await import("../payments/domain");
 const { CASE_RESPONSE_SLA_MS, computeElapsedSlaTime } = await import("./domain/sla");
@@ -116,6 +117,34 @@ function createFixture(options: {
 		},
 		async findOpinionByCaseId(caseId: string): Promise<CaseOpinionRecord | null> {
 			return opinions.get(caseId) ?? null;
+		},
+		async listSlaCandidates() {
+			return [...cases.values()].flatMap((record) => record.submittedAt && record.chargedAmount
+				&& ["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)
+				? [{
+					id: record.id,
+					status: record.status,
+					submittedAt: record.submittedAt,
+					slaPauseHistory: record.slaPauseHistory,
+					chargedAmount: record.chargedAmount,
+				}]
+				: []);
+		},
+		async markCaseRefundPending(caseId: string, expectedStatus: CaseRecord["status"]): Promise<boolean> {
+			const record = cases.get(caseId);
+			if (!record || record.status !== expectedStatus || !["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)) return false;
+			cases.set(caseId, { ...record, status: "RefundPending" });
+			return true;
+		},
+		async listRefundPendingCases() {
+			return [...cases.values()].filter((record) => record.status === "RefundPending" && record.chargedAmount).map((record) => ({
+				id: record.id,
+				affectedBodyArea: record.affectedBodyArea,
+				urgencyTier: record.urgencyTier,
+				doctorId: record.doctorId,
+				submittedAt: record.submittedAt,
+				chargedAmount: record.chargedAmount,
+			}));
 		},
 		async listPatientCases(patientId: string) {
 			return [...cases.values()]
@@ -247,7 +276,7 @@ function createFixture(options: {
 			if (options.failDocumentPersistence || options.failResponsePersistence) throw new Error("document persistence failed");
 			const record = cases.get(caseId);
 			const requests = documentRequests.get(caseId) ?? [];
-			const activeRequestIndex = requests.findLastIndex(({ fulfilledAt }) => fulfilledAt === null);
+			const activeRequestIndex = requests.findLastIndex(({ fulfilledAt, closedAt }) => fulfilledAt === null && closedAt === null);
 			if (!record || record.patientId !== patientId || record.status !== "MoreInfoRequested" || activeRequestIndex < 0) return null;
 			const history = Array.isArray(record.slaPauseHistory) ? [...record.slaPauseHistory] : [];
 			const openIndex = history.findLastIndex((interval) => typeof interval === "object" && interval !== null && !Array.isArray(interval) && interval.resumedAt === null);
@@ -493,6 +522,213 @@ test("Opinion submission rejects invalid text, wrong/unverified Doctors, and Ref
 	assert.equal(Array.from((await unicodeFixture.service.submitOpinion(VERIFIED_DOCTOR, unicodeRecord.id, emojiOpinion)).text).length, 10000);
 });
 
+test("daily SLA scan transitions overdue Submitted and UnderReview Cases but respects pauses and the exact boundary", async () => {
+	const fixture = createFixture();
+	const now = new Date("2026-10-22T12:00:00.000Z");
+	const overdueAnchor = new Date(now.getTime() - CASE_RESPONSE_SLA_MS - 1);
+	const overdueSubmitted = await createSubmittedCase(fixture);
+	fixture.cases.set(overdueSubmitted.id, { ...overdueSubmitted, submittedAt: overdueAnchor });
+
+	const overdueUnderReview = await createAssignedCase(fixture);
+	fixture.cases.set(overdueUnderReview.id, { ...overdueUnderReview, submittedAt: overdueAnchor });
+
+	const pausedCase = await createAssignedCase(fixture);
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, pausedCase.id, "Please attach a report.");
+	const pausedAnchor = new Date(now.getTime() - 125 * 60 * 60 * 1000);
+	const pausedAt = new Date(now.getTime() - 124 * 60 * 60 * 1000);
+	fixture.cases.set(pausedCase.id, {
+		...fixture.cases.get(pausedCase.id)!,
+		submittedAt: pausedAnchor,
+		slaPauseHistory: [{ pausedAt: pausedAt.toISOString(), resumedAt: null }],
+	});
+
+	const overdueMoreInfo = await createAssignedCase(fixture);
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, overdueMoreInfo.id, "Please attach a recent scan.");
+	const overdueMoreInfoAnchor = new Date(now.getTime() - 130 * 60 * 60 * 1000);
+	const recentPauseAt = new Date(now.getTime() - 60 * 60 * 1000);
+	fixture.cases.set(overdueMoreInfo.id, {
+		...fixture.cases.get(overdueMoreInfo.id)!,
+		submittedAt: overdueMoreInfoAnchor,
+		slaPauseHistory: [{ pausedAt: recentPauseAt.toISOString(), resumedAt: null }],
+	});
+
+	const exactBoundary = await createSubmittedCase(fixture);
+	fixture.cases.set(exactBoundary.id, { ...exactBoundary, submittedAt: new Date(now.getTime() - CASE_RESPONSE_SLA_MS) });
+	const alreadyPending = await createSubmittedCase(fixture);
+	fixture.cases.set(alreadyPending.id, { ...alreadyPending, status: "RefundPending", submittedAt: overdueAnchor });
+	const invalidPauseCase = await createSubmittedCase(fixture);
+	fixture.cases.set(invalidPauseCase.id, { ...invalidPauseCase, submittedAt: overdueAnchor, slaPauseHistory: ["invalid"] });
+
+	const result = await fixture.service.runSlaBreachScan(now);
+	assert.equal(result.scannedCount, 6);
+	assert.equal(result.transitionedCount, 3);
+	assert.deepEqual(new Set(result.refundCases.map(({ caseId }) => caseId)), new Set([overdueSubmitted.id, overdueUnderReview.id, overdueMoreInfo.id]));
+	assert.equal(fixture.cases.get(overdueSubmitted.id)?.status, "RefundPending");
+	assert.equal(fixture.cases.get(overdueUnderReview.id)?.status, "RefundPending");
+	assert.equal(fixture.cases.get(overdueMoreInfo.id)?.status, "RefundPending");
+	assert.equal(fixture.cases.get(pausedCase.id)?.status, "MoreInfoRequested");
+	assert.equal(fixture.cases.get(exactBoundary.id)?.status, "Submitted");
+	assert.equal(fixture.cases.get(alreadyPending.id)?.status, "RefundPending");
+	assert.equal(fixture.cases.get(invalidPauseCase.id)?.status, "Submitted");
+	assert.deepEqual(fixture.cases.get(pausedCase.id)?.slaPauseHistory, [{ pausedAt: pausedAt.toISOString(), resumedAt: null }]);
+	assert.deepEqual(new Set((await fixture.service.listRefundPendingCases(ADMIN)).map(({ id }) => id)), new Set([
+		overdueSubmitted.id,
+		overdueUnderReview.id,
+		overdueMoreInfo.id,
+		alreadyPending.id,
+	]));
+	await assert.rejects(fixture.service.listRefundPendingCases(DOCTOR), { code: "CASE_ADMIN_ACCESS_DENIED" });
+});
+
+test("daily SLA scan treats an Opinion closure race as a conditional no-op", async () => {
+	const fixture = createFixture();
+	const now = new Date("2026-10-22T12:00:00.000Z");
+	const overdue = await createAssignedCase(fixture);
+	fixture.cases.set(overdue.id, { ...overdue, submittedAt: new Date(now.getTime() - CASE_RESPONSE_SLA_MS - 1) });
+	const originalMarkRefundPending = fixture.repository.markCaseRefundPending;
+	fixture.repository.markCaseRefundPending = async (caseId, expectedStatus) => {
+		fixture.cases.set(caseId, { ...fixture.cases.get(caseId)!, status: "Closed" });
+		return originalMarkRefundPending(caseId, expectedStatus);
+	};
+
+	const result = await fixture.service.runSlaBreachScan(now);
+	assert.equal(result.scannedCount, 1);
+	assert.equal(result.transitionedCount, 0);
+	assert.equal(fixture.cases.get(overdue.id)?.status, "Closed");
+});
+
+test("daily SLA scan does not overwrite a successful Patient response that wins the race", async () => {
+	const fixture = createFixture();
+	const record = await createAssignedCase(fixture);
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "Please attach the latest report.");
+	const now = new Date();
+	const submittedAt = new Date(now.getTime() - 125 * 60 * 60 * 1000);
+	const pausedAt = new Date(now.getTime() - 60 * 60 * 1000);
+	fixture.cases.set(record.id, {
+		...fixture.cases.get(record.id)!,
+		submittedAt,
+		slaPauseHistory: [{ pausedAt: pausedAt.toISOString(), resumedAt: null }],
+	});
+	const markRefundPending = fixture.repository.markCaseRefundPending;
+	fixture.repository.markCaseRefundPending = async (caseId, expectedStatus) => {
+		await fixture.service.uploadDocuments(PATIENT, caseId, [upload()]);
+		return markRefundPending(caseId, expectedStatus);
+	};
+
+	const result = await fixture.service.runSlaBreachScan(now);
+	assert.equal(result.scannedCount, 1);
+	assert.equal(result.transitionedCount, 0);
+	assert.equal(fixture.cases.get(record.id)?.status, "UnderReview");
+	assert.ok((fixture.cases.get(record.id)?.slaPauseHistory as { resumedAt: string | null }[])[0].resumedAt);
+});
+
+test("daily SLA job passes one scan time and emits structured success or failure logs", async () => {
+	const info: string[] = [];
+	const errors: string[] = [];
+	const scannedTimes: Date[] = [];
+	const result = await runCaseSlaBreachJob(async (now) => {
+		scannedTimes.push(now);
+		return { scannedCount: 4, transitionedCount: 2, refundCases: [{ caseId: "case-1", chargedAmount: "1000.00" }] };
+	}, { info: (message) => info.push(message), error: (message) => errors.push(message) });
+	const scannedAt = scannedTimes[0];
+	assert.ok(scannedAt instanceof Date);
+	assert.equal(result.transitionedCount, 2);
+	assert.deepEqual(JSON.parse(info[0]), {
+		event: "case_sla_breach_scan",
+		outcome: "success",
+		startedAt: scannedAt.toISOString(),
+		scannedCount: 4,
+		transitionedCount: 2,
+	});
+	await assert.rejects(runCaseSlaBreachJob(async () => { throw new Error("scan failed"); }, {
+		info: (message) => info.push(message),
+		error: (message) => errors.push(message),
+	}), /scan failed/);
+	assert.equal(JSON.parse(errors[0]).outcome, "failure");
+});
+
+test("daily SLA scheduler runs once immediately, registers one 24-hour interval, and prevents overlap per process", async () => {
+	const jobGlobal = globalThis as typeof globalThis & { __secOpinionSlaBreachJobStarted?: boolean };
+	delete jobGlobal.__secOpinionSlaBreachJobStarted;
+	let scans = 0;
+	let intervalRegistrations = 0;
+	const intervalCallbacks: (() => void)[] = [];
+	const releaseFirstScan: (() => void)[] = [];
+	const firstScanGate = new Promise<void>((resolve) => releaseFirstScan.push(resolve));
+	let intervalDelay = 0;
+	let activeScans = 0;
+	let maximumActiveScans = 0;
+	const scan = async () => {
+		scans += 1;
+		activeScans += 1;
+		maximumActiveScans = Math.max(maximumActiveScans, activeScans);
+		if (scans === 1) await firstScanGate;
+		activeScans -= 1;
+		return { scannedCount: 0, transitionedCount: 0, refundCases: [] };
+	};
+	const schedule = (callback: () => void, delay: number) => {
+		intervalRegistrations += 1;
+		intervalCallbacks.push(callback);
+		intervalDelay = delay;
+		return { unref() {} };
+	};
+	try {
+		startDailyCaseSlaBreachJob(scan, { info() {}, error() {} }, schedule);
+		startDailyCaseSlaBreachJob(scan, { info() {}, error() {} }, schedule);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(scans, 1);
+		assert.equal(intervalRegistrations, 1);
+		assert.equal(intervalDelay, 24 * 60 * 60 * 1000);
+
+		intervalCallbacks[0]?.();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(scans, 1);
+		releaseFirstScan[0]?.();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		intervalCallbacks[0]?.();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(scans, 2);
+		assert.equal(maximumActiveScans, 1);
+	} finally {
+		releaseFirstScan[0]?.();
+		delete jobGlobal.__secOpinionSlaBreachJobStarted;
+	}
+});
+
+test("Next Node instrumentation registers the daily SLA scheduler", async () => {
+	const jobGlobal = globalThis as typeof globalThis & { __secOpinionSlaBreachJobStarted?: boolean };
+	const originalRuntime = process.env.NEXT_RUNTIME;
+	const originalSetInterval = globalThis.setInterval;
+	const originalScan = casesService.runSlaBreachScan;
+	let intervalRegistrations = 0;
+	let scanCalls = 0;
+	process.env.NEXT_RUNTIME = "nodejs";
+	delete jobGlobal.__secOpinionSlaBreachJobStarted;
+	casesService.runSlaBreachScan = async () => {
+		scanCalls += 1;
+		return { scannedCount: 0, transitionedCount: 0, refundCases: [] };
+	};
+	globalThis.setInterval = ((callback: (...args: never[]) => void, delay?: number) => {
+		intervalRegistrations += 1;
+		assert.equal(delay, 24 * 60 * 60 * 1000);
+		assert.equal(typeof callback, "function");
+		return { unref() {} } as unknown as ReturnType<typeof setInterval>;
+	}) as unknown as typeof setInterval;
+	try {
+		const { register } = await import("../../instrumentation");
+		await register();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(scanCalls, 1);
+		assert.equal(intervalRegistrations, 1);
+	} finally {
+		casesService.runSlaBreachScan = originalScan;
+		globalThis.setInterval = originalSetInterval;
+		if (originalRuntime === undefined) delete process.env.NEXT_RUNTIME;
+		else process.env.NEXT_RUNTIME = originalRuntime;
+		delete jobGlobal.__secOpinionSlaBreachJobStarted;
+	}
+});
+
 test("Doctor request persists a trimmed note and open SLA pause for Patient and Doctor views", async () => {
 	const fixture = createFixture();
 	const record = await createAssignedCase(fixture);
@@ -598,6 +834,8 @@ test("SLA arithmetic starts at submission, excludes completed and open pauses, a
 			{ pausedAt: new Date(submittedAt.getTime() + 4 * 60 * 60 * 1000).toISOString(), resumedAt: new Date(submittedAt.getTime() + 8 * 60 * 60 * 1000).toISOString() },
 		],
 	}, new Date(submittedAt.getTime() + 10 * 60 * 60 * 1000)), 3 * 60 * 60 * 1000);
+	assert.equal(computeElapsedSlaTime({ submittedAt, slaPauseHistory: [{ pausedAt: "invalid", resumedAt: null }] }, now), null);
+	assert.equal(computeElapsedSlaTime({ submittedAt, slaPauseHistory: [{ pausedAt: "2026-01-02T00:00:00.000Z", resumedAt: "2026-01-01T12:00:00.000Z" }] }, now), null);
 	assert.equal(computeElapsedSlaTime({ submittedAt: null, slaPauseHistory: [] }, now), null);
 });
 
@@ -1621,5 +1859,67 @@ test("Opinion repository transaction rolls back Opinion, request close, and SLA 
 		});
 	} finally {
 		prismaClient.$transaction = originalTransaction;
+	}
+});
+
+test("SLA candidate repository includes only paid open statuses with submission anchors", async () => {
+	const caseDelegate = prisma.case as unknown as { findMany: (args: unknown) => Promise<CaseRecord[]> };
+	const originalFindMany = caseDelegate.findMany;
+	let query: unknown;
+	caseDelegate.findMany = async (args) => { query = args; return []; };
+	try {
+		assert.deepEqual(await casesRepository.listSlaCandidates(), []);
+		assert.deepEqual(query, {
+			where: {
+				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+				submittedAt: { not: null },
+				chargedAmount: { not: null },
+			},
+			orderBy: { submittedAt: "asc" },
+			select: { id: true, status: true, submittedAt: true, slaPauseHistory: true, chargedAmount: true },
+		});
+	} finally {
+		caseDelegate.findMany = originalFindMany;
+	}
+});
+
+test("RefundPending repository transition compare-and-swaps the observed eligible status", async () => {
+	const caseDelegate = prisma.case as unknown as { updateMany: (args: unknown) => Promise<{ count: number }> };
+	const originalUpdateMany = caseDelegate.updateMany;
+	let query: unknown;
+	caseDelegate.updateMany = async (args) => { query = args; return { count: 1 }; };
+	try {
+		assert.equal(await casesRepository.markCaseRefundPending("case-1", "Submitted"), true);
+		assert.deepEqual(query, {
+			where: { id: "case-1", status: "Submitted", submittedAt: { not: null }, chargedAmount: { not: null } },
+			data: { status: "RefundPending" },
+		});
+		assert.equal(await casesRepository.markCaseRefundPending("case-1", "Closed"), false);
+	} finally {
+		caseDelegate.updateMany = originalUpdateMany;
+	}
+});
+
+test("Admin RefundPending repository selects only fields needed for the decision worklist", async () => {
+	const caseDelegate = prisma.case as unknown as { findMany: (args: unknown) => Promise<unknown[]> };
+	const originalFindMany = caseDelegate.findMany;
+	let query: unknown;
+	caseDelegate.findMany = async (args) => { query = args; return []; };
+	try {
+		assert.deepEqual(await casesRepository.listRefundPendingCases(), []);
+		assert.deepEqual(query, {
+			where: { status: "RefundPending", chargedAmount: { not: null } },
+			orderBy: { submittedAt: "asc" },
+			select: {
+				id: true,
+				affectedBodyArea: true,
+				urgencyTier: true,
+				doctorId: true,
+				submittedAt: true,
+				chargedAmount: true,
+			},
+		});
+	} finally {
+		caseDelegate.findMany = originalFindMany;
 	}
 });

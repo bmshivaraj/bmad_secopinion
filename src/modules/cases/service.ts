@@ -31,6 +31,7 @@ import {
 	type CaseDocumentRecord,
 	type CaseDocumentRequestRecord,
 	type CaseOpinionRecord,
+	type CaseSlaCandidateRecord,
 	type OpinionPayoutCursor,
 	type CaseDocumentUpload,
 	type CaseDraftInput,
@@ -51,6 +52,7 @@ type CasesRepository = Pick<
 	| "listAdminAssignmentCases" | "assignCaseToDoctor" | "classifySubmittedCase" | "findDoctorVisibleCase"
 	| "listPatientCases" | "createDocumentRequest" | "createDocuments" | "createResponseDocuments" | "findDocumentById" | "deleteDocument"
 	| "submitOpinion" | "listClosedOpinionsForPayout" | "findOpinionByCaseId"
+	| "listSlaCandidates" | "markCaseRefundPending" | "listRefundPendingCases"
 >;
 
 type DoctorsService = Pick<
@@ -718,6 +720,34 @@ export function createCasesService(
 			const opinion = await repository.findOpinionByCaseId(caseId);
 			if (!opinion) throw new CaseNotFoundError();
 			return publicOpinion(opinion);
+		},
+
+		async runSlaBreachScan(now = new Date()) {
+			if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+				throw new InvalidCaseInputError("now must be a valid Date.");
+			}
+			const candidates = await repository.listSlaCandidates();
+			const refundCases: { caseId: string; chargedAmount: string }[] = [];
+			for (const candidate of candidates) {
+				if (!canTransitionCase(candidate.status, "RefundPending")) continue;
+				const elapsed = computeElapsedSlaTime(candidate as CaseSlaCandidateRecord, now);
+				if (elapsed === null || elapsed <= CASE_RESPONSE_SLA_MS) continue;
+				if (!await repository.markCaseRefundPending(candidate.id, candidate.status)) continue;
+				refundCases.push({ caseId: candidate.id, chargedAmount: candidate.chargedAmount.toFixed(2) });
+			}
+			return { scannedCount: candidates.length, transitionedCount: refundCases.length, refundCases };
+		},
+
+		async listRefundPendingCases(caller: AuthContext) {
+			assertAdmin(caller);
+			return (await repository.listRefundPendingCases()).map((record) => ({
+				id: record.id,
+				affectedBodyArea: record.affectedBodyArea,
+				urgencyTier: record.urgencyTier,
+				doctorId: record.doctorId,
+				submittedAt: record.submittedAt?.toISOString() ?? null,
+				chargedAmount: record.chargedAmount?.toFixed(2) ?? null,
+			}));
 		},
 
 		async listClosedOpinionsForPayout(after: OpinionPayoutCursor | null) {

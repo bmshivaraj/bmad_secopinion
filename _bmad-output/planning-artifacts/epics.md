@@ -467,13 +467,13 @@ So that Patients whose Case got no Doctor Opinion are not left waiting indefinit
 
 **Acceptance Criteria:**
 
-**Given** a Case in `Under Review` or `More Info Requested`
+**Given** a paid, unclosed Case in `Submitted`, `Under Review`, or `More Info Requested`
 **When** the daily batch job runs
 **Then** it calls `computeElapsedSlaTime(case)` for every open Case and compares the result against the 5-day/120h threshold `[FR-13, AD-8, AD-11]`
 
 **Given** a Case whose elapsed SLA time exceeds 120 hours
 **When** the job detects the breach
-**Then** Case Status transitions to `Refund Pending` per AD-13, and the Admin receives a notification naming the Case and amount `[FR-13]`
+**Then** Case Status transitions to `Refund Pending` per AD-13, and its Case ID and captured amount appear in the in-app Admin refund worklist `[FR-13]`
 
 **Given** a Case now in `Refund Pending`
 **When** the Doctor attempts to submit an Opinion, or the Patient attempts to upload further Documents or edit the Case

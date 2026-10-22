@@ -4,7 +4,7 @@ import type { Prisma } from "../../generated/prisma/client";
 import { canTransitionCase } from "./domain";
 import { CaseDocumentRequestConflictError } from "./domain";
 import { CaseOpinionConflictError } from "./domain";
-import type { CaseDocumentRecord, CaseDocumentRequestRecord, CaseDraftInput, CaseOpinionRecord, CaseRecord, CaseStatus, OpinionPayoutCursor } from "./domain";
+import type { CaseDocumentRecord, CaseDocumentRequestRecord, CaseDraftInput, CaseOpinionRecord, CaseRecord, CaseSlaCandidateRecord, CaseStatus, OpinionPayoutCursor } from "./domain";
 
 const draftInclude = { documents: { orderBy: { createdAt: "asc" as const } } } as const;
 const caseHistoryInclude = {
@@ -106,6 +106,49 @@ export const casesRepository = {
 			where: { patientId, status: { not: "Draft" } },
 			orderBy: { updatedAt: "desc" },
 			include: caseHistoryInclude,
+		});
+	},
+
+	async listSlaCandidates(): Promise<CaseSlaCandidateRecord[]> {
+		const records = await prisma.case.findMany({
+			where: {
+				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+				submittedAt: { not: null },
+				chargedAmount: { not: null },
+			},
+			orderBy: { submittedAt: "asc" },
+			select: { id: true, status: true, submittedAt: true, slaPauseHistory: true, chargedAmount: true },
+		});
+		return records.flatMap((record) => record.submittedAt && record.chargedAmount ? [{
+			id: record.id,
+			status: record.status,
+			submittedAt: record.submittedAt,
+			slaPauseHistory: record.slaPauseHistory,
+			chargedAmount: record.chargedAmount,
+		}] : []);
+	},
+
+	async markCaseRefundPending(caseId: string, expectedStatus: CaseStatus): Promise<boolean> {
+		if (!canTransitionCase(expectedStatus, "RefundPending")) return false;
+		const updated = await prisma.case.updateMany({
+			where: { id: caseId, status: expectedStatus, submittedAt: { not: null }, chargedAmount: { not: null } },
+			data: { status: "RefundPending" },
+		});
+		return updated.count === 1;
+	},
+
+	async listRefundPendingCases() {
+		return prisma.case.findMany({
+			where: { status: "RefundPending", chargedAmount: { not: null } },
+			orderBy: { submittedAt: "asc" },
+			select: {
+				id: true,
+				affectedBodyArea: true,
+				urgencyTier: true,
+				doctorId: true,
+				submittedAt: true,
+				chargedAmount: true,
+			},
 		});
 	},
 

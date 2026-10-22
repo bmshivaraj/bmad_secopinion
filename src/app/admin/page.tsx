@@ -57,6 +57,15 @@ interface AssignmentCase {
   assignmentLockVersion: number;
 }
 
+interface RefundPendingCase {
+  id: string;
+  affectedBodyArea: string;
+  urgencyTier: "Standard" | "Urgent" | null;
+  doctorId: string | null;
+  submittedAt: string | null;
+  chargedAmount: string | null;
+}
+
 interface ApiResult<T> {
   data: T | null;
   error: { message: string } | null;
@@ -73,11 +82,13 @@ export default function AdminPage() {
   const [specialties, setSpecialties] = useState<Specialty[]>([]);
   const [unclassifiedCases, setUnclassifiedCases] = useState<UnclassifiedCase[]>([]);
   const [assignmentCases, setAssignmentCases] = useState<AssignmentCase[]>([]);
+  const [refundPendingCases, setRefundPendingCases] = useState<RefundPendingCase[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSpecialtiesLoading, setIsSpecialtiesLoading] = useState(true);
   const [isCasesLoading, setIsCasesLoading] = useState(true);
   const [isAssignmentQueueLoading, setIsAssignmentQueueLoading] = useState(true);
+  const [isRefundPendingLoading, setIsRefundPendingLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAddingSpecialty, setIsAddingSpecialty] = useState(false);
   const [busyDoctorId, setBusyDoctorId] = useState<string | null>(null);
@@ -94,6 +105,7 @@ export default function AdminPage() {
   const [casesNotice, setCasesNotice] = useState("");
   const [assignmentError, setAssignmentError] = useState("");
   const [assignmentNotice, setAssignmentNotice] = useState("");
+  const [refundPendingError, setRefundPendingError] = useState("");
 
   useEffect(() => {
     let isCurrent = true;
@@ -205,10 +217,36 @@ export default function AdminPage() {
       }
     }
 
+    async function loadRefundPendingCases() {
+      setIsRefundPendingLoading(true);
+      setRefundPendingError("");
+      try {
+        const response = await fetch("/api/admin/cases/refunds", { cache: "no-store" });
+        const result = await response.json() as ApiResult<RefundPendingCase[]>;
+        if (!isCurrent) return;
+        if (response.status === 401 || response.status === 403) {
+          setIsAuthenticated(false);
+          setRefundPendingCases([]);
+          return;
+        }
+        if (!response.ok || result.error || !result.data) {
+          setRefundPendingError(result.error?.message ?? "Unable to load RefundPending Cases.");
+          return;
+        }
+        setIsAuthenticated(true);
+        setRefundPendingCases(result.data);
+      } catch {
+        if (isCurrent) setRefundPendingError("Unable to connect. Please try again.");
+      } finally {
+        if (isCurrent) setIsRefundPendingLoading(false);
+      }
+    }
+
     void loadQueue();
     void loadSpecialties();
     void loadUnclassifiedCases();
     void loadAssignmentCases();
+    void loadRefundPendingCases();
     return () => {
       isCurrent = false;
     };
@@ -572,6 +610,43 @@ export default function AdminPage() {
                   </article>
                 );
               })}
+            </div>
+          )}
+        </section>
+
+        <section className="admin-case-classification-section" aria-labelledby="admin-refund-pending-heading">
+          <div className="admin-heading-row">
+            <div>
+              <p className="admin-eyebrow">Refund review</p>
+              <h1 id="admin-refund-pending-heading">RefundPending Cases</h1>
+            </div>
+            <div className="admin-queue-actions">
+              {!isRefundPendingLoading && <p className="admin-queue-count">{refundPendingCases.length} pending decision</p>}
+              <button className="admin-signout" type="button" onClick={() => setRefreshKey((value) => value + 1)} disabled={isRefundPendingLoading}>Refresh refund list</button>
+            </div>
+          </div>
+          {refundPendingError && <p className="admin-error" role="alert">{refundPendingError}</p>}
+          {isRefundPendingLoading ? (
+            <p className="admin-muted" role="status">Loading RefundPending Cases...</p>
+          ) : refundPendingError && refundPendingCases.length === 0 ? (
+            <section className="admin-empty-state"><h2>Refund worklist unavailable</h2><p>Pending refund decisions could not be loaded.</p></section>
+          ) : refundPendingCases.length === 0 ? (
+            <section className="admin-empty-state"><h2>No refund decisions pending</h2><p>Cases that breach the Response SLA will appear here.</p></section>
+          ) : (
+            <div className="admin-case-list">
+              {refundPendingCases.map((caseRecord) => (
+                <article className="admin-case-row" key={caseRecord.id}>
+                  <div className="admin-case-description">
+                    <h2>{caseRecord.affectedBodyArea}</h2>
+                    <p>Case ID: {caseRecord.id}</p>
+                    <p><strong>Captured amount:</strong> {caseRecord.chargedAmount ? `₹${caseRecord.chargedAmount}` : "Unavailable"}</p>
+                    <p><strong>Urgency:</strong> {caseRecord.urgencyTier ?? "Unavailable"}</p>
+                    <p><strong>Doctor:</strong> {caseRecord.doctorId ?? "Unassigned"}</p>
+                    <span>Submitted {caseRecord.submittedAt ? new Date(caseRecord.submittedAt).toLocaleString() : "time unavailable"}</span>
+                  </div>
+                  <strong className="admin-status">Awaiting decision</strong>
+                </article>
+              ))}
             </div>
           )}
         </section>

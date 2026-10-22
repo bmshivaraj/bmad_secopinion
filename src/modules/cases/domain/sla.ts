@@ -12,14 +12,15 @@ function asDate(value: unknown): Date | null {
 	return date && Number.isFinite(date.getTime()) ? date : null;
 }
 
-function readPauseIntervals(value: CaseRecord["slaPauseHistory"]): PauseInterval[] {
-	if (!Array.isArray(value)) return [];
+function readPauseIntervals(value: CaseRecord["slaPauseHistory"]): PauseInterval[] | null {
+	if (!Array.isArray(value)) return null;
 	const intervals: PauseInterval[] = [];
 	for (const item of value) {
-		if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+		if (typeof item !== "object" || item === null || Array.isArray(item)) return null;
 		const pausedAt = asDate(item.pausedAt);
 		const resumedAt = item.resumedAt === null ? null : asDate(item.resumedAt);
-		if (pausedAt && (item.resumedAt === null || resumedAt)) intervals.push({ pausedAt, resumedAt });
+		if (!pausedAt || (item.resumedAt !== null && !resumedAt) || (resumedAt && resumedAt < pausedAt)) return null;
+		intervals.push({ pausedAt, resumedAt });
 	}
 	return intervals;
 }
@@ -30,7 +31,9 @@ export function computeElapsedSlaTime(caseRecord: Pick<CaseRecord, "submittedAt"
 	const nowMs = now.getTime();
 	if (!Number.isFinite(submittedAt) || !Number.isFinite(nowMs)) return null;
 	const elapsedMs = Math.max(0, nowMs - submittedAt);
-	const pauses = readPauseIntervals(caseRecord.slaPauseHistory)
+	const parsedPauses = readPauseIntervals(caseRecord.slaPauseHistory);
+	if (!parsedPauses) return null;
+	const pauses = parsedPauses
 		.map(({ pausedAt, resumedAt }) => ({
 			start: Math.max(submittedAt, pausedAt.getTime()),
 			end: Math.min(nowMs, resumedAt?.getTime() ?? nowMs),

@@ -164,6 +164,7 @@ model Case {
   slaPauseHistory       Json         @default("[]") @map("sla_pause_history")
   assignmentLockVersion Int          @default(0) @map("assignment_lock_version")
   documents             CaseDocument[]
+  documentRequests      CaseDocumentRequest[]
   createdAt             DateTime     @default(now()) @map("created_at")
   updatedAt             DateTime     @updatedAt @map("updated_at")
 
@@ -185,6 +186,20 @@ model CaseDocument {
 
   @@index([caseId, createdAt])
   @@map("case_documents")
+}
+
+model CaseDocumentRequest {
+  id                    String    @id @default(uuid())
+  caseId                String    @map("case_id")
+  requestedByDoctorId   String    @map("requested_by_doctor_id")
+  note                  String    @db.VarChar(2000)
+  case                  Case      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  createdAt             DateTime  @default(now()) @map("created_at")
+  fulfilledAt           DateTime? @map("fulfilled_at")
+
+  @@index([caseId, createdAt])
+  @@index([caseId, fulfilledAt])
+  @@map("case_document_requests")
 }
 
 model PaymentAttempt {

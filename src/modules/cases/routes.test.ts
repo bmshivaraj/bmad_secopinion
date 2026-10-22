@@ -9,6 +9,7 @@ const {
 	parseCaseClassificationRequest,
 	parseCaseAssignmentRequest,
 	parseCaseDraftRequest,
+	parseCaseDocumentRequest,
 	parseCaseSubmissionRequest,
 	parseDoctorSelectionRequest,
 	requireDocumentReaderContext,
@@ -27,6 +28,8 @@ const { GET: getDoctorDirectoryRoute } = await import("../../app/api/cases/docto
 const { PATCH: patchDoctorSelectionRoute } = await import("../../app/api/cases/[caseId]/selection/route");
 const { POST: postCaseSubmitRoute } = await import("../../app/api/cases/[caseId]/submit/route");
 const { GET: getCaseFeesRoute } = await import("../../app/api/cases/fees/route");
+const { GET: getPatientCasesRoute } = await import("../../app/api/cases/route");
+const { POST: postDocumentRequestRoute } = await import("../../app/api/cases/[caseId]/document-requests/route");
 const { casesService } = await import("./service");
 const { CaseAccessDeniedError, CaseAssignmentVersionConflictError } = await import("./domain");
 const { signAuthToken } = await import("../../shared/auth-context");
@@ -231,6 +234,7 @@ test("classification and Doctor queue routes use role sessions and private envel
 		elapsedSlaMs: 1000,
 		remainingSlaMs: 431999000,
 		documents: [],
+		documentRequests: [],
 	});
 	try {
 		const adminToken = signAuthToken({ userId: "admin-1", role: "admin" });
@@ -274,6 +278,99 @@ test("classification and Doctor queue routes use role sessions and private envel
 			body: JSON.stringify({ specialtyId: "specialty-cardio" }),
 		}), { params: Promise.resolve({ caseId: "case-1" }) });
 		assert.equal(nonAdmin.status, 403);
+	} finally {
+		Object.assign(casesService, originals);
+	}
+});
+
+test("document request and Patient Case list routes enforce role sessions and private envelopes", async () => {
+	const originals = {
+		requestDocuments: casesService.requestDocuments,
+		getDoctorCase: casesService.getDoctorCase,
+		listPatientCases: casesService.listPatientCases,
+	};
+	let requestedBy = "";
+	let requestedNote = "";
+	let listedFor = "";
+	casesService.requestDocuments = async (caller, caseId, note) => {
+		requestedBy = `${caller.userId}:${caseId}`;
+		requestedNote = note as string;
+		return { id: "request-1", note: requestedNote, createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null };
+	};
+	casesService.getDoctorCase = async () => ({
+		id: "case-1",
+		affectedBodyArea: "Knee",
+		condition: "Pain",
+		recommendation: "Review",
+		additionalDetails: "",
+		specialtyId: "specialty-cardio",
+		urgencyTier: "Standard",
+		status: "MoreInfoRequested",
+		doctorId: "doctor-1",
+		assignmentLockVersion: 0,
+		submittedAt: "2026-10-22T12:00:00.000Z",
+		elapsedSlaMs: 1000,
+		remainingSlaMs: 431999000,
+		documents: [],
+		documentRequests: [{ id: "request-1", note: requestedNote, createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null }],
+	});
+	casesService.listPatientCases = async (caller) => {
+		listedFor = caller.userId;
+		return caller.userId === "patient-1" ? [{
+			id: "case-owned",
+			affectedBodyArea: "Knee",
+			condition: "Pain",
+			status: "MoreInfoRequested",
+			urgencyTier: "Standard",
+			submittedAt: "2026-10-22T12:00:00.000Z",
+			updatedAt: "2026-10-22T12:01:00.000Z",
+			documents: [],
+			documentRequests: [{ id: "request-1", note: "Please attach a scan.", createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null }],
+		}] : [];
+	};
+	try {
+		assert.equal(await parseCaseDocumentRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ note: "Please attach a scan." }),
+		})), "Please attach a scan.");
+		await assert.rejects(parseCaseDocumentRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ note: 42 }),
+		})), { code: "VALIDATION_ERROR" });
+
+		const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
+		const requestResponse = await postDocumentRequestRoute(new Request("http://localhost/api/cases/case-1/document-requests", {
+			method: "POST",
+			headers: { cookie: `doctor_session=${doctorToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ note: "Please attach a scan." }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(requestResponse.status, 200);
+		assert.equal(requestResponse.headers.get("cache-control"), "private, no-store");
+		assert.equal(requestedBy, "doctor-1:case-1");
+		assert.equal(requestedNote, "Please attach a scan.");
+		assert.equal((await requestResponse.json() as { data: { documentRequests: { note: string }[] } }).data.documentRequests[0].note, requestedNote);
+
+		const patientToken = signAuthToken({ userId: "patient-1", role: "patient" });
+		const patientCases = await getPatientCasesRoute(new Request("http://localhost/api/cases", {
+			headers: { cookie: `patient_session=${patientToken}` },
+		}));
+		assert.equal(patientCases.status, 200);
+		assert.equal(patientCases.headers.get("cache-control"), "private, no-store");
+		assert.equal(listedFor, "patient-1");
+		assert.equal((await patientCases.json() as { data: { id: string }[] }).data[0].id, "case-owned");
+
+		const unauthorizedRequest = await postDocumentRequestRoute(new Request("http://localhost/api/cases/case-1/document-requests", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ note: "Please attach a scan." }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(unauthorizedRequest.status, 401);
+		const wrongRoleList = await getPatientCasesRoute(new Request("http://localhost/api/cases", {
+			headers: { cookie: `doctor_session=${doctorToken}` },
+		}));
+		assert.equal(wrongRoleList.status, 401);
 	} finally {
 		Object.assign(casesService, originals);
 	}

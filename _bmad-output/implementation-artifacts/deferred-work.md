@@ -113,3 +113,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-2-claim-or-admin-assign-a-case.md`
   summary: Add page-level interaction coverage for Doctor claims and Admin assignment selection/refresh states.
   evidence: The repository has no page or browser test harness; route and service tests do not render or click either page's controls.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-3-request-additional-documents.md`
+  summary: Add page-level interaction tests for Doctor request creation and Patient request visibility/response upload when UI test infrastructure is available.
+  evidence: The repository has no page/browser test harness, and the integrated browser bridge failed to connect; route and service tests do not render or operate the new pages.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-3-request-additional-documents.md`
+  summary: Apply the Case Document request migration and verify the partial unique index plus concurrent request/response rollback behavior against PostgreSQL.
+  evidence: `npx prisma migrate status` and database-backed verification fail with PostgreSQL `P1000`; service and mocked repository transaction tests pass.

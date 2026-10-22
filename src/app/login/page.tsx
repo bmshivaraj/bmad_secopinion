@@ -11,9 +11,12 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
+  const [returnTo, setReturnTo] = useState("/");
 
   useEffect(() => {
-    setSetupComplete(new URLSearchParams(window.location.search).get("setup") === "complete");
+    const searchParams = new URLSearchParams(window.location.search);
+    setSetupComplete(searchParams.get("setup") === "complete");
+    setReturnTo(searchParams.get("returnTo") === "/cases" ? "/cases" : "/");
   }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -36,7 +39,7 @@ export default function LoginPage() {
         setError(result.error?.message ?? "Unable to sign in. Please try again.");
         return;
       }
-      window.location.assign("/");
+      window.location.assign(returnTo);
     } catch {
       setError("Unable to connect. Please try again.");
     } finally {

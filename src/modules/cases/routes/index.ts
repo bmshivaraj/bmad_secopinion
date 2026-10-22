@@ -161,6 +161,21 @@ export async function parseCaseAssignmentRequest(request: Request): Promise<{ do
 	};
 }
 
+export async function parseCaseDocumentRequest(request: Request): Promise<string> {
+	let body: unknown;
+	try {
+		body = await request.json();
+	} catch {
+		throw new InvalidCaseInputError("Request body must be valid JSON.");
+	}
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		throw new InvalidCaseInputError("Request body must be a JSON object.");
+	}
+	const note = (body as Record<string, unknown>).note;
+	if (typeof note !== "string") throw new InvalidCaseInputError("note must be text.");
+	return note;
+}
+
 export async function parseCaseDocumentUploads(request: Request): Promise<CaseDocumentUpload[]> {
 	const contentLength = Number(request.headers.get("content-length"));
 	if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_SIZE) {
@@ -269,6 +284,7 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	CASE_ASSIGNMENT_DOCTOR_UNAVAILABLE: 409,
 	CASE_DOCUMENT_NOT_FOUND: 404,
 	CASE_DOCUMENT_REQUIRED: 409,
+	CASE_DOCUMENT_REQUEST_CONFLICT: 409,
 	CASE_DOCTOR_SELECTION_CONFLICT: 409,
 	CASE_SUBMISSION_CONFLICT: 409,
 	PAYMENT_ATTEMPT_CONFLICT: 409,

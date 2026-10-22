@@ -15,6 +15,15 @@ export interface CaseDocumentRecord {
 	createdAt: Date;
 }
 
+export interface CaseDocumentRequestRecord {
+	id: string;
+	caseId: string;
+	requestedByDoctorId: string;
+	note: string;
+	createdAt: Date;
+	fulfilledAt: Date | null;
+}
+
 export interface CaseRecord {
 	id: string;
 	patientId: string;
@@ -34,6 +43,7 @@ export interface CaseRecord {
 	createdAt: Date;
 	updatedAt: Date;
 	documents: CaseDocumentRecord[];
+	documentRequests?: CaseDocumentRequestRecord[];
 }
 
 export interface CaseDraftInput {
@@ -158,6 +168,14 @@ export class CaseSubmissionConflictError extends DomainError {
 
 	constructor() {
 		super("This Case can no longer be submitted with those selections.");
+	}
+}
+
+export class CaseDocumentRequestConflictError extends DomainError {
+	readonly code = "CASE_DOCUMENT_REQUEST_CONFLICT";
+
+	constructor() {
+		super("This Case is no longer accepting a Document request or response.");
 	}
 }
 

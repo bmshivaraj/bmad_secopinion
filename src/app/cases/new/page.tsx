@@ -326,7 +326,10 @@ export default function NewCasePage() {
 					<span className="case-brand-mark" aria-hidden="true">S</span>
 					SecOpinion
 				</Link>
-				<Link className="case-account-link" href="/login">Patient account</Link>
+				<nav className="patient-case-nav" aria-label="Patient account">
+					<Link className="case-account-link" href="/cases">My Cases</Link>
+					<Link className="case-account-link" href="/login">Patient account</Link>
+				</nav>
 			</header>
 
 			<div className="case-content">

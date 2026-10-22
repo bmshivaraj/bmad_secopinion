@@ -816,6 +816,12 @@ a {
   text-underline-offset: 4px;
 }
 
+.patient-case-nav {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
 .case-content {
   width: min(100%, 960px);
   margin: 0 auto;
@@ -1736,6 +1742,12 @@ a {
   overflow-wrap: anywhere;
 }
 
+.doctor-case-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
 .doctor-detail-condition {
   margin: 17px 0;
   font-size: 14px;
@@ -1796,6 +1808,226 @@ a {
 .doctor-case-documents li span {
   color: var(--muted);
   font-size: 11px;
+}
+
+.doctor-case-requests,
+.doctor-document-request-form {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.doctor-case-requests h3 {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.doctor-case-requests ol {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.doctor-case-requests li {
+  display: grid;
+  gap: 5px;
+}
+
+.doctor-case-requests p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.doctor-case-requests time,
+.doctor-case-requests strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.doctor-document-request-form {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+
+.doctor-document-request-form label,
+.patient-case-upload label {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.doctor-document-request-form textarea {
+  width: 100%;
+  min-height: 110px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.patient-cases-content {
+  width: min(100%, 960px);
+  margin: 0 auto;
+  padding: 54px 24px 80px;
+}
+
+.patient-cases-heading-row {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.patient-cases-heading-row .case-heading {
+  margin-bottom: 42px;
+}
+
+.patient-case-list {
+  display: grid;
+  gap: 16px;
+}
+
+.patient-case-item,
+.patient-case-empty {
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+}
+
+.patient-case-item-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.patient-case-id,
+.patient-case-submitted {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.patient-case-item-header h2,
+.patient-case-empty h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.patient-case-status {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  color: var(--green-dark);
+  font-size: 11px;
+  text-align: right;
+}
+
+.patient-case-status span {
+  color: var(--muted);
+}
+
+.patient-case-condition {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.patient-case-requests,
+.patient-case-documents,
+.patient-case-upload {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.patient-case-requests h3,
+.patient-case-documents h3 {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.patient-case-requests ol,
+.patient-case-documents ul {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.patient-case-requests li {
+  display: grid;
+  gap: 5px;
+}
+
+.patient-case-requests p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.patient-case-requests time,
+.patient-case-requests strong,
+.patient-case-fulfilled {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.patient-case-documents li a {
+  font-size: 12px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+  text-underline-offset: 3px;
+}
+
+.patient-case-upload {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+}
+
+.patient-case-upload input[type="file"] {
+  width: 100%;
+  max-width: 600px;
+  min-height: 40px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.patient-case-empty {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+}
+
+.patient-case-empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .doctor-queue-message {
@@ -1875,5 +2107,33 @@ a {
 
   .doctor-case-detail {
     padding: 18px 16px;
+  }
+
+  .patient-cases-content {
+    padding: 36px 18px 60px;
+  }
+
+  .patient-cases-heading-row {
+    align-items: start;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .patient-case-item,
+  .patient-case-empty {
+    padding: 18px 16px;
+  }
+
+  .patient-case-item-header {
+    flex-direction: column;
+  }
+
+  .patient-case-status {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .patient-case-nav {
+    gap: 12px;
   }
 }

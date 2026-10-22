@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
 interface ApiResult<T> {
 	data: T | null;
@@ -32,8 +32,16 @@ interface CaseDocument {
 	createdAt: string;
 }
 
+interface CaseDocumentRequest {
+	id: string;
+	note: string;
+	createdAt: string;
+	fulfilledAt: string | null;
+}
+
 interface CaseDetail extends QueueCase {
 	documents: CaseDocument[];
+	documentRequests: CaseDocumentRequest[];
 }
 
 function formatRemainingTime(milliseconds: number | null): string {
@@ -62,6 +70,10 @@ export default function DoctorQueuePage() {
 	const [detailError, setDetailError] = useState("");
 	const [claimError, setClaimError] = useState("");
 	const [claimNotice, setClaimNotice] = useState("");
+	const [requestNote, setRequestNote] = useState("");
+	const [requestError, setRequestError] = useState("");
+	const [requestNotice, setRequestNotice] = useState("");
+	const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
 	const [busyClaimCaseId, setBusyClaimCaseId] = useState<string | null>(null);
 	const [refreshKey, setRefreshKey] = useState(0);
 
@@ -104,9 +116,12 @@ export default function DoctorQueuePage() {
 
 	async function openCase(caseId: string) {
 		const requestId = ++detailRequestId.current;
+		if (activeCase?.id !== caseId) setRequestNote("");
 		setIsLoadingDetail(true);
 		setActiveCase(null);
 		setDetailError("");
+		setRequestError("");
+		setRequestNotice("");
 		try {
 			const response = await fetch(`/api/doctors/queue/${encodeURIComponent(caseId)}`, { cache: "no-store" });
 			const result = await response.json() as ApiResult<CaseDetail>;
@@ -152,6 +167,36 @@ export default function DoctorQueuePage() {
 			refreshQueue();
 		} finally {
 			setBusyClaimCaseId(null);
+		}
+	}
+
+	async function submitDocumentRequest(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (!activeCase) return;
+		setIsSubmittingRequest(true);
+		setRequestError("");
+		setRequestNotice("");
+		try {
+			const response = await fetch(`/api/cases/${encodeURIComponent(activeCase.id)}/document-requests`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ note: requestNote }),
+			});
+			const result = await response.json() as ApiResult<CaseDetail>;
+			if (!response.ok || result.error || !result.data) {
+				setRequestError(result.error?.message ?? "Unable to save the Document request.");
+				return;
+			}
+			setActiveCase(result.data);
+			setCases((current) => current.map((caseRecord) => caseRecord.id === result.data?.id
+				? { ...caseRecord, status: result.data.status, elapsedSlaMs: result.data.elapsedSlaMs, remainingSlaMs: result.data.remainingSlaMs }
+				: caseRecord));
+			setRequestNote("");
+			setRequestNotice("Request saved. The Case is waiting for the Patient.");
+		} catch {
+			setRequestError("Unable to confirm whether the request was saved. Refresh the Case before retrying.");
+		} finally {
+			setIsSubmittingRequest(false);
 		}
 	}
 
@@ -244,14 +289,22 @@ export default function DoctorQueuePage() {
 							<section className="doctor-case-detail" aria-labelledby="doctor-case-detail-heading">
 								<div className="doctor-case-detail-heading">
 									<div><p className="admin-eyebrow">Case details</p><h2 id="doctor-case-detail-heading">{activeCase.affectedBodyArea}</h2></div>
-									<button className="doctor-open-case" type="button" onClick={() => {
-										detailRequestId.current += 1;
-										setActiveCase(null);
-										setDetailError("");
-										setIsLoadingDetail(false);
-									}}>Close</button>
+									<div className="doctor-case-detail-actions">
+										<button className="doctor-open-case" type="button" disabled={isLoadingDetail} onClick={() => void openCase(activeCase.id)}>Refresh Case</button>
+										<button className="doctor-open-case" type="button" onClick={() => {
+											detailRequestId.current += 1;
+											setActiveCase(null);
+											setRequestNote("");
+											setRequestError("");
+											setRequestNotice("");
+											setDetailError("");
+											setIsLoadingDetail(false);
+										}}>Close</button>
+									</div>
 								</div>
 								<p className="doctor-detail-condition">{activeCase.condition}</p>
+								{requestError && <p className="admin-error" role="alert">{requestError}</p>}
+								{requestNotice && <p className="admin-notice" role="status">{requestNotice}</p>}
 								<dl className="doctor-detail-fields">
 									<div><dt>Patient-provided recommendation</dt><dd>{activeCase.recommendation}</dd></div>
 									{activeCase.additionalDetails && <div><dt>Additional details</dt><dd>{activeCase.additionalDetails}</dd></div>}
@@ -264,6 +317,35 @@ export default function DoctorQueuePage() {
 											<li key={document.id}><a href={`/api/cases/documents/${encodeURIComponent(document.id)}`}>{document.fileName}</a><span>{document.contentType}</span></li>
 										))}</ul>
 									</div>
+								)}
+								{activeCase.documentRequests.length > 0 && (
+									<section className="doctor-case-requests" aria-labelledby="doctor-case-requests-heading">
+										<h3 id="doctor-case-requests-heading">Document requests</h3>
+										<ol>{activeCase.documentRequests.map((documentRequest) => (
+											<li key={documentRequest.id}>
+												<p>{documentRequest.note}</p>
+												<time dateTime={documentRequest.createdAt}>{new Date(documentRequest.createdAt).toLocaleString()}</time>
+												<strong>{documentRequest.fulfilledAt ? "Patient responded" : "Waiting for Patient"}</strong>
+											</li>
+										))}</ol>
+									</section>
+								)}
+								{activeCase.status === "UnderReview" && activeCase.doctorId !== null && (
+									<form className="doctor-document-request-form" onSubmit={(event) => void submitDocumentRequest(event)}>
+										<label htmlFor="document-request-note">Request additional Documents</label>
+										<textarea
+											id="document-request-note"
+											maxLength={2000}
+											minLength={1}
+											value={requestNote}
+											onChange={(event) => setRequestNote(event.target.value)}
+											required
+											rows={4}
+										/>
+										<button className="case-button case-button-primary" type="submit" disabled={isSubmittingRequest || !requestNote.trim()}>
+											{isSubmittingRequest ? "Saving..." : "Request Documents"}
+										</button>
+									</form>
 								)}
 							</section>
 						)}

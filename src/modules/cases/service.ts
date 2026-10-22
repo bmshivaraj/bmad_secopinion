@@ -20,6 +20,7 @@ import {
 	CaseDoctorAccessDeniedError,
 	CaseDoctorSelectionConflictError,
 	CaseDocumentNotFoundError,
+	CaseDocumentRequestConflictError,
 	CaseDocumentRequiredError,
 	CaseNotFoundError,
 	CaseSessionUnauthorizedError,
@@ -27,6 +28,7 @@ import {
 	CaseUploadTooLargeError,
 	InvalidCaseInputError,
 	type CaseDocumentRecord,
+	type CaseDocumentRequestRecord,
 	type CaseDocumentUpload,
 	type CaseDraftInput,
 	type CaseRecord,
@@ -44,7 +46,7 @@ type CasesRepository = Pick<
 	| "createDraft" | "findByCreationRequestId" | "findLatestDraft" | "updateDraft" | "updateDraftDoctorSelection"
 	| "updateCaseToSubmitted" | "findById" | "listUnclassifiedSubmittedCases" | "listDoctorQueue"
 	| "listAdminAssignmentCases" | "assignCaseToDoctor" | "classifySubmittedCase" | "findDoctorVisibleCase"
-	| "createDocuments" | "findDocumentById" | "deleteDocument"
+	| "listPatientCases" | "createDocumentRequest" | "createDocuments" | "createResponseDocuments" | "findDocumentById" | "deleteDocument"
 >;
 
 type DoctorsService = Pick<
@@ -147,6 +149,15 @@ function publicDocument(document: CaseDocumentRecord) {
 		contentType: document.contentType,
 		sizeBytes: document.sizeBytes,
 		createdAt: document.createdAt,
+	};
+}
+
+function publicDocumentRequest(request: CaseDocumentRequestRecord) {
+	return {
+		id: request.id,
+		note: request.note,
+		createdAt: request.createdAt.toISOString(),
+		fulfilledAt: request.fulfilledAt?.toISOString() ?? null,
 	};
 }
 
@@ -294,8 +305,14 @@ export function createCasesService(
 		async uploadDocuments(caller: AuthContext, caseId: string, uploads: CaseDocumentUpload[]) {
 			assertPatient(caller);
 			const record = await repository.findById(caseId);
-			assertDraftOwner(record, caller.userId);
-			await assertDraftMutationAllowed(payments, caseId);
+			if (!record) throw new CaseNotFoundError();
+			if (record.patientId !== caller.userId) throw new CaseAccessDeniedError();
+			if (record.status === "Draft") {
+				assertDraftOwner(record, caller.userId);
+				await assertDraftMutationAllowed(payments, caseId);
+			} else if (record.status !== "MoreInfoRequested") {
+				throw new CaseDocumentRequestConflictError();
+			}
 			const validUploads = validateUploads(uploads);
 			const savedFiles: { storageKey: string; upload: CaseDocumentUpload }[] = [];
 			try {
@@ -303,12 +320,16 @@ export function createCasesService(
 					const saved = await storage.save(upload.bytes);
 					savedFiles.push({ storageKey: saved.storageKey, upload });
 				}
-				const documents = await repository.createDocuments(caseId, savedFiles.map(({ storageKey, upload }) => ({
+				const documentRecords = savedFiles.map(({ storageKey, upload }) => ({
 					fileName: upload.fileName,
 					contentType: upload.contentType,
 					sizeBytes: upload.bytes.byteLength,
 					storageKey,
-				})));
+				}));
+				const documents = record.status === "MoreInfoRequested"
+					? await repository.createResponseDocuments(caseId, caller.userId, documentRecords, new Date())
+					: await repository.createDocuments(caseId, documentRecords);
+				if (!documents) throw new CaseDocumentRequestConflictError();
 				return documents.map(publicDocument);
 			} catch (error) {
 				await Promise.all(savedFiles.map(({ storageKey }) => storage.delete(storageKey).catch(() => undefined)));
@@ -653,7 +674,45 @@ export function createCasesService(
 			return {
 				...doctorCaseSummary(record, new Date()),
 				documents: record.doctorId === caller.userId ? record.documents.map(publicDocument) : [],
+				documentRequests: (record.documentRequests ?? []).map(publicDocumentRequest),
 			};
+		},
+
+		async requestDocuments(caller: AuthContext, caseId: string, note: unknown) {
+			assertDoctor(caller);
+			const specialtyIds = await doctors.getVerifiedDoctorSpecialtyIds(caller.userId);
+			if (!specialtyIds) throw new CaseDoctorAccessDeniedError();
+			if (typeof note !== "string") throw new InvalidCaseInputError("note must be text.");
+			const normalizedNote = note.trim();
+			if (!normalizedNote || normalizedNote.length > 2000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalizedNote)) {
+				throw new InvalidCaseInputError("note must be 1-2000 characters without control characters.");
+			}
+			const record = await repository.findById(caseId);
+			if (!record) throw new CaseNotFoundError();
+			if (record.doctorId !== caller.userId || !record.specialtyId || !specialtyIds.includes(record.specialtyId)) {
+				throw new CaseNotFoundError();
+			}
+			if (record.status !== "UnderReview") throw new CaseDocumentRequestConflictError();
+			const requestedAt = new Date();
+			const request = await repository.createDocumentRequest(caseId, caller.userId, normalizedNote, requestedAt);
+			if (!request) throw new CaseDocumentRequestConflictError();
+			return publicDocumentRequest(request);
+		},
+
+		async listPatientCases(caller: AuthContext) {
+			assertPatient(caller);
+			const records = await repository.listPatientCases(caller.userId);
+			return records.map((record) => ({
+				id: record.id,
+				affectedBodyArea: record.affectedBodyArea,
+				condition: record.condition,
+				status: record.status,
+				urgencyTier: record.urgencyTier,
+				submittedAt: record.submittedAt?.toISOString() ?? null,
+				updatedAt: record.updatedAt.toISOString(),
+				documents: record.documents.map(publicDocument),
+				documentRequests: (record.documentRequests ?? []).map(publicDocumentRequest),
+			}));
 		},
 	};
 }

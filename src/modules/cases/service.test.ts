@@ -4,7 +4,7 @@ import test from "node:test";
 import { Prisma } from "../../generated/prisma/client";
 import type { AuthContext } from "../../shared/auth-context";
 import type { StorageProvider } from "../../shared/storage-provider";
-import type { CaseDocumentRecord, CaseDocumentUpload, CaseDraftInput, CaseRecord } from "./domain";
+import type { CaseDocumentRecord, CaseDocumentRequestRecord, CaseDocumentUpload, CaseDraftInput, CaseRecord } from "./domain";
 import type { PaymentAttempt } from "../payments/domain";
 
 process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopinion_test";
@@ -36,6 +36,7 @@ function upload(contentType = "application/pdf", bytes = new TextEncoder().encod
 function createFixture(options: {
 	failSaveAt?: number;
 	failDocumentPersistence?: boolean;
+	failResponsePersistence?: boolean;
 	failDelete?: boolean;
 	failSubmissionPersistence?: boolean;
 	failPayment?: boolean;
@@ -47,6 +48,7 @@ function createFixture(options: {
 	const cases = new Map<string, CaseRecord>();
 		const requestCases = new Map<string, string>();
 	const documents = new Map<string, CaseDocumentRecord>();
+	const documentRequests = new Map<string, CaseDocumentRequestRecord[]>();
 	const files = new Map<string, Uint8Array>();
 	let saveCalls = 0;
 	let readCalls = 0;
@@ -111,6 +113,11 @@ function createFixture(options: {
 		async findById(caseId: string): Promise<CaseRecord | null> {
 			return cases.get(caseId) ?? null;
 		},
+		async listPatientCases(patientId: string) {
+			return [...cases.values()]
+				.filter((record) => record.patientId === patientId && record.status !== "Draft")
+				.map((record) => ({ ...record, documentRequests: documentRequests.get(record.id) ?? [] }));
+		},
 		async listUnclassifiedSubmittedCases(): Promise<CaseRecord[]> {
 			return [...cases.values()].filter((record) => record.status === "Submitted" && record.specialtyId === null);
 		},
@@ -163,7 +170,25 @@ function createFixture(options: {
 			return record && specialtyIds.includes(record.specialtyId ?? "")
 				&& ["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)
 				&& record.submittedAt !== null
-				&& (record.doctorId === null || record.doctorId === doctorId) ? record : null;
+				&& (record.doctorId === null || record.doctorId === doctorId)
+				? { ...record, documentRequests: documentRequests.get(record.id) ?? [] }
+				: null;
+		},
+		async createDocumentRequest(caseId: string, doctorId: string, note: string, requestedAt: Date): Promise<CaseDocumentRequestRecord | null> {
+			const record = cases.get(caseId);
+			if (!record || record.status !== "UnderReview" || record.doctorId !== doctorId) return null;
+			const request: CaseDocumentRequestRecord = {
+				id: randomUUID(), caseId, requestedByDoctorId: doctorId, note, createdAt: requestedAt, fulfilledAt: null,
+			};
+			const history = Array.isArray(record.slaPauseHistory) ? record.slaPauseHistory : [];
+			cases.set(caseId, {
+				...record,
+				status: "MoreInfoRequested",
+				slaPauseHistory: [...history, { pausedAt: requestedAt.toISOString(), resumedAt: null }],
+				updatedAt: requestedAt,
+			});
+			documentRequests.set(caseId, [...(documentRequests.get(caseId) ?? []), request]);
+			return request;
 		},
 		async createDocuments(caseId: string, newDocuments: Omit<CaseDocumentRecord, "id" | "caseId" | "createdAt">[]): Promise<CaseDocumentRecord[]> {
 			if (options.failDocumentPersistence) throw new Error("document persistence failed");
@@ -173,6 +198,37 @@ function createFixture(options: {
 			created.forEach((document) => documents.set(document.id, document));
 			const record = cases.get(caseId);
 			if (record) cases.set(caseId, { ...record, documents: [...record.documents, ...created] });
+			return created;
+		},
+		async createResponseDocuments(
+			caseId: string,
+			patientId: string,
+			newDocuments: Omit<CaseDocumentRecord, "id" | "caseId" | "createdAt">[],
+			resumedAt: Date,
+		): Promise<CaseDocumentRecord[] | null> {
+			if (options.failDocumentPersistence || options.failResponsePersistence) throw new Error("document persistence failed");
+			const record = cases.get(caseId);
+			const requests = documentRequests.get(caseId) ?? [];
+			const activeRequestIndex = requests.findLastIndex(({ fulfilledAt }) => fulfilledAt === null);
+			if (!record || record.patientId !== patientId || record.status !== "MoreInfoRequested" || activeRequestIndex < 0) return null;
+			const history = Array.isArray(record.slaPauseHistory) ? [...record.slaPauseHistory] : [];
+			const openIndex = history.findLastIndex((interval) => typeof interval === "object" && interval !== null && !Array.isArray(interval) && interval.resumedAt === null);
+			if (openIndex < 0) return null;
+			const openInterval = history[openIndex];
+			if (typeof openInterval !== "object" || openInterval === null || Array.isArray(openInterval)) return null;
+			history[openIndex] = { ...openInterval, resumedAt: resumedAt.toISOString() };
+			const created = newDocuments.map((document) => ({ ...document, id: randomUUID(), caseId, createdAt: resumedAt }));
+			const updatedRequests = [...requests];
+			updatedRequests[activeRequestIndex] = { ...updatedRequests[activeRequestIndex], fulfilledAt: resumedAt };
+			documentRequests.set(caseId, updatedRequests);
+			created.forEach((document) => documents.set(document.id, document));
+			cases.set(caseId, {
+				...record,
+				status: "UnderReview",
+				slaPauseHistory: history,
+				documents: [...record.documents, ...created],
+				updatedAt: resumedAt,
+			});
 			return created;
 		},
 		async findDocumentById(documentId: string) {
@@ -293,6 +349,7 @@ function createFixture(options: {
 	return {
 		cases,
 		documents,
+		documentRequests,
 		files,
 		deleteCalls,
 		get saveCalls() { return saveCalls; },
@@ -320,6 +377,100 @@ async function createSubmittedCase(
 	await fixture.service.submitCase(PATIENT, draft.id, urgencyTier, doctorId);
 	return fixture.cases.get(draft.id)!;
 }
+
+async function createAssignedCase(fixture: ReturnType<typeof createFixture>) {
+	const submitted = await createSubmittedCase(fixture);
+	await fixture.service.classifySubmittedCase(ADMIN, submitted.id, "specialty-cardiology");
+	const classified = fixture.cases.get(submitted.id)!;
+	await fixture.service.assignCaseToDoctor(VERIFIED_DOCTOR, submitted.id, undefined, classified.assignmentLockVersion);
+	return fixture.cases.get(submitted.id)!;
+}
+
+test("Doctor request persists a trimmed note and open SLA pause for Patient and Doctor views", async () => {
+	const fixture = createFixture();
+	const record = await createAssignedCase(fixture);
+	const request = await fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "  Please attach the latest scan.  ");
+
+	assert.equal(request.note, "Please attach the latest scan.");
+	assert.equal(fixture.cases.get(record.id)?.status, "MoreInfoRequested");
+	assert.equal((fixture.cases.get(record.id)?.slaPauseHistory as { pausedAt: string; resumedAt: string | null }[]).at(-1)?.resumedAt, null);
+	assert.equal(fixture.documentRequests.get(record.id)?.length, 1);
+	assert.equal((await fixture.service.getDoctorCase(VERIFIED_DOCTOR, record.id)).documentRequests[0].note, request.note);
+	const patientCases = await fixture.service.listPatientCases(PATIENT);
+	assert.equal(patientCases.length, 1);
+	assert.equal(patientCases[0].documentRequests[0].note, request.note);
+	assert.deepEqual(await fixture.service.listPatientCases(OTHER_PATIENT), []);
+});
+
+test("Document requests reject invalid notes, wrong Doctors, unverified Doctors, and duplicate active requests", async () => {
+	const fixture = createFixture({ includeAdditionalDoctors: true });
+	const record = await createAssignedCase(fixture);
+	const unassigned = await createSubmittedCase(fixture);
+	await assert.rejects(fixture.service.requestDocuments(VERIFIED_DOCTOR, unassigned.id, "Please attach a scan."), { code: "CASE_NOT_FOUND" });
+	await assert.rejects(fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "  "), { code: "VALIDATION_ERROR" });
+	await assert.rejects(fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "x".repeat(2001)), { code: "VALIDATION_ERROR" });
+	await assert.rejects(fixture.service.requestDocuments({ userId: "doctor-verified-b", role: "doctor" }, record.id, "Please attach a scan."), { code: "CASE_NOT_FOUND" });
+	await assert.rejects(fixture.service.requestDocuments({ userId: "doctor-pending", role: "doctor" }, record.id, "Please attach a scan."), { code: "CASE_DOCTOR_ACCESS_DENIED" });
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "Please attach a scan.");
+	await assert.rejects(fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "A second active request."), { code: "CASE_DOCUMENT_REQUEST_CONFLICT" });
+	assert.equal(fixture.documentRequests.get(record.id)?.length, 1);
+	assert.equal((fixture.cases.get(record.id)?.slaPauseHistory as unknown[]).length, 1);
+});
+
+test("Patient response upload fulfills a request, resumes SLA, and permits a distinct later cycle", async () => {
+	const fixture = createFixture();
+	const record = await createAssignedCase(fixture);
+	const submittedAt = record.submittedAt;
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "Please attach a scan.");
+	await assert.rejects(fixture.service.uploadDocuments(OTHER_PATIENT, record.id, [upload()]), { code: "CASE_ACCESS_DENIED" });
+	assert.equal(fixture.saveCalls, 1);
+
+	const [responseDocument] = await fixture.service.uploadDocuments(PATIENT, record.id, [upload()]);
+	const resumedCase = fixture.cases.get(record.id)!;
+	assert.equal(responseDocument.fileName, "report.pdf");
+	assert.equal(resumedCase.status, "UnderReview");
+	assert.equal(resumedCase.submittedAt, submittedAt);
+	assert.ok((resumedCase.slaPauseHistory as { resumedAt: string | null }[])[0].resumedAt);
+	assert.ok(fixture.documentRequests.get(record.id)?.[0].fulfilledAt);
+
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "Please attach the final report.");
+	const cycled = fixture.cases.get(record.id)!;
+	assert.equal(fixture.documentRequests.get(record.id)?.length, 2);
+	assert.equal((cycled.slaPauseHistory as unknown[]).length, 2);
+	assert.equal((cycled.slaPauseHistory as { resumedAt: string | null }[])[1].resumedAt, null);
+});
+
+test("failed response metadata persistence preserves request pause and removes stored bytes", async () => {
+	const fixture = createFixture({ failResponsePersistence: true });
+	const record = await createAssignedCase(fixture);
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "Please attach a scan.");
+	const before = fixture.cases.get(record.id)!;
+	const pauseHistory = before.slaPauseHistory;
+	const storedFileCount = fixture.files.size;
+	await assert.rejects(fixture.service.uploadDocuments(PATIENT, record.id, [upload(), upload()]), /document persistence failed/);
+
+	assert.equal(fixture.cases.get(record.id)?.status, "MoreInfoRequested");
+	assert.deepEqual(fixture.cases.get(record.id)?.slaPauseHistory, pauseHistory);
+	assert.equal(fixture.documentRequests.get(record.id)?.[0].fulfilledAt, null);
+	assert.equal(fixture.files.size, storedFileCount);
+	assert.equal(fixture.deleteCalls.length, 2);
+});
+
+test("invalid and partially stored response uploads leave the request and SLA pause open", async () => {
+	const fixture = createFixture({ failSaveAt: 3 });
+	const record = await createAssignedCase(fixture);
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "Please attach a scan.");
+	const before = fixture.cases.get(record.id)!;
+	const storedFileCount = fixture.files.size;
+	await assert.rejects(fixture.service.uploadDocuments(PATIENT, record.id, [upload("image/gif", new Uint8Array([1]), "bad.gif")]), { code: "VALIDATION_ERROR" });
+	await assert.rejects(fixture.service.uploadDocuments(PATIENT, record.id, [upload(), upload()]), /storage save failed/);
+
+	assert.equal(fixture.cases.get(record.id)?.status, "MoreInfoRequested");
+	assert.deepEqual(fixture.cases.get(record.id)?.slaPauseHistory, before.slaPauseHistory);
+	assert.equal(fixture.documentRequests.get(record.id)?.[0].fulfilledAt, null);
+	assert.equal(fixture.files.size, storedFileCount);
+	assert.equal(fixture.deleteCalls.length, 1);
+});
 
 test("SLA arithmetic starts at submission, excludes completed and open pauses, and caps at the 120-hour boundary", () => {
 	const submittedAt = new Date("2026-01-01T00:00:00.000Z");
@@ -918,7 +1069,10 @@ test("queue repository enforces active statuses, Specialty membership, and assig
 				submittedAt: { not: null },
 				OR: [{ doctorId: null }, { doctorId: "doctor-a" }],
 			},
-			include: { documents: { orderBy: { createdAt: "asc" } } },
+			include: {
+				documents: { orderBy: { createdAt: "asc" } },
+				documentRequests: { orderBy: { createdAt: "asc" } },
+			},
 		});
 	} finally {
 		Object.assign(caseDelegate, originals);
@@ -998,5 +1152,187 @@ test("Admin assignment repository selects only classified active review Cases an
 		});
 	} finally {
 		caseDelegate.findMany = originalFindMany;
+	}
+});
+
+test("Patient Case list repository scopes by owner and omits Draft Cases", async () => {
+	const caseDelegate = prisma.case as unknown as { findMany: (args: unknown) => Promise<CaseRecord[]> };
+	const originalFindMany = caseDelegate.findMany;
+	let query: unknown;
+	caseDelegate.findMany = async (args) => { query = args; return []; };
+	try {
+		assert.deepEqual(await casesRepository.listPatientCases(PATIENT.userId), []);
+		assert.deepEqual(query, {
+			where: { patientId: PATIENT.userId, status: { not: "Draft" } },
+			orderBy: { updatedAt: "desc" },
+			include: {
+				documents: { orderBy: { createdAt: "asc" } },
+				documentRequests: { orderBy: { createdAt: "asc" } },
+			},
+		});
+	} finally {
+		caseDelegate.findMany = originalFindMany;
+	}
+});
+
+test("request and response repositories conditionally transition Case status with SLA and request timestamps", async () => {
+	type TransactionMock = {
+		case: {
+			findFirst: (args: unknown) => Promise<{ slaPauseHistory: Prisma.JsonValue } | null>;
+			updateMany: (args: unknown) => Promise<{ count: number }>;
+		};
+		caseDocumentRequest: {
+			create: (args: unknown) => Promise<CaseDocumentRequestRecord>;
+			findFirst: (args: unknown) => Promise<{ id: string } | null>;
+			updateMany: (args: unknown) => Promise<{ count: number }>;
+		};
+		caseDocument: { create: (args: unknown) => Promise<CaseDocumentRecord> };
+	};
+	const prismaClient = prisma as unknown as {
+		$transaction: (callback: (transaction: TransactionMock) => Promise<unknown>) => Promise<unknown>;
+	};
+	const originalTransaction = prismaClient.$transaction;
+	const requestedAt = new Date("2026-10-22T12:00:00.000Z");
+	const resumedAt = new Date("2026-10-22T13:00:00.000Z");
+	const existingHistory = [{ pausedAt: "2026-10-20T12:00:00.000Z", resumedAt: "2026-10-21T12:00:00.000Z" }];
+	const caseUpdates: unknown[] = [];
+	const requestUpdates: unknown[] = [];
+	const documentCreates: unknown[] = [];
+	const requestCreates: unknown[] = [];
+	let caseFindCount = 0;
+	const transaction: TransactionMock = {
+		case: {
+			async findFirst() {
+				caseFindCount += 1;
+				return { slaPauseHistory: caseFindCount === 1
+					? existingHistory
+					: [...existingHistory, { pausedAt: requestedAt.toISOString(), resumedAt: null }] };
+			},
+			async updateMany(args) { caseUpdates.push(args); return { count: 1 }; },
+		},
+		caseDocumentRequest: {
+			async create(args) {
+				requestCreates.push(args);
+				return { id: "request-1", caseId: "case-1", requestedByDoctorId: "doctor-1", note: "Attach a scan.", createdAt: requestedAt, fulfilledAt: null };
+			},
+			async findFirst() { return { id: "request-1" }; },
+			async updateMany(args) { requestUpdates.push(args); return { count: 1 }; },
+		},
+		caseDocument: {
+			async create(args) {
+				documentCreates.push(args);
+				return { id: "document-1", caseId: "case-1", fileName: "scan.pdf", contentType: "application/pdf", sizeBytes: 12, storageKey: "private-key", createdAt: resumedAt };
+			},
+		},
+	};
+	prismaClient.$transaction = async (callback) => callback(transaction);
+	try {
+		const request = await casesRepository.createDocumentRequest("case-1", "doctor-1", "Attach a scan.", requestedAt);
+		assert.equal(request?.id, "request-1");
+		assert.deepEqual(caseUpdates[0], {
+			where: { id: "case-1", doctorId: "doctor-1", status: "UnderReview" },
+			data: {
+				status: "MoreInfoRequested",
+				slaPauseHistory: [...existingHistory, { pausedAt: requestedAt.toISOString(), resumedAt: null }],
+			},
+		});
+		assert.deepEqual(requestCreates[0], {
+			data: { caseId: "case-1", requestedByDoctorId: "doctor-1", note: "Attach a scan.", createdAt: requestedAt },
+		});
+
+		const documents = await casesRepository.createResponseDocuments("case-1", PATIENT.userId, [{
+			fileName: "scan.pdf", contentType: "application/pdf", sizeBytes: 12, storageKey: "private-key",
+		}], resumedAt);
+		assert.equal(documents?.[0].id, "document-1");
+		const responseUpdate = caseUpdates[1] as { where: unknown; data: { status: string; slaPauseHistory: unknown[] } };
+		assert.deepEqual(responseUpdate.where, { id: "case-1", patientId: PATIENT.userId, status: "MoreInfoRequested" });
+		assert.equal(responseUpdate.data.status, "UnderReview");
+		assert.deepEqual(responseUpdate.data.slaPauseHistory, [
+			...existingHistory,
+			{ pausedAt: requestedAt.toISOString(), resumedAt: resumedAt.toISOString() },
+		]);
+		assert.deepEqual(requestUpdates[0], {
+			where: { id: "request-1", fulfilledAt: null },
+			data: { fulfilledAt: resumedAt },
+		});
+		assert.equal(documentCreates.length, 1);
+	} finally {
+		prismaClient.$transaction = originalTransaction;
+	}
+});
+
+test("response repository transaction rolls back Case, request, and Document writes after a later failure", async () => {
+	type TransactionMock = {
+		case: {
+			findFirst: (args: unknown) => Promise<{ slaPauseHistory: Prisma.JsonValue } | null>;
+			updateMany: (args: unknown) => Promise<{ count: number }>;
+		};
+		caseDocumentRequest: {
+			findFirst: (args: unknown) => Promise<{ id: string } | null>;
+			updateMany: (args: unknown) => Promise<{ count: number }>;
+		};
+		caseDocument: { create: (args: unknown) => Promise<CaseDocumentRecord> };
+	};
+	const prismaClient = prisma as unknown as {
+		$transaction: (callback: (transaction: TransactionMock) => Promise<unknown>) => Promise<unknown>;
+	};
+	const originalTransaction = prismaClient.$transaction;
+	const resumedAt = new Date("2026-10-22T13:00:00.000Z");
+	const state = {
+		status: "MoreInfoRequested",
+		slaPauseHistory: [{ pausedAt: "2026-10-22T12:00:00.000Z", resumedAt: null }] as Prisma.JsonValue,
+		fulfilledAt: null as Date | null,
+		documentIds: [] as string[],
+	};
+	let documentCreateCount = 0;
+	const transaction: TransactionMock = {
+		case: {
+			async findFirst() { return { slaPauseHistory: state.slaPauseHistory }; },
+			async updateMany(args) {
+				const data = (args as { data: { status: string; slaPauseHistory: Prisma.JsonValue } }).data;
+				state.status = data.status;
+				state.slaPauseHistory = data.slaPauseHistory;
+				return { count: 1 };
+			},
+		},
+		caseDocumentRequest: {
+			async findFirst() { return { id: "request-1" }; },
+			async updateMany(args) {
+				state.fulfilledAt = (args as { data: { fulfilledAt: Date } }).data.fulfilledAt;
+				return { count: 1 };
+			},
+		},
+		caseDocument: {
+			async create(args) {
+				documentCreateCount += 1;
+				if (documentCreateCount === 2) throw new Error("second document write failed");
+				const data = args as { caseId: string; fileName: string; contentType: string; sizeBytes: number; storageKey: string };
+				state.documentIds.push(`document-${documentCreateCount}`);
+				return { ...data, id: `document-${documentCreateCount}`, createdAt: resumedAt };
+			},
+		},
+	};
+	prismaClient.$transaction = async (callback) => {
+		const snapshot = structuredClone(state);
+		try {
+			return await callback(transaction);
+		} catch (error) {
+			Object.assign(state, snapshot);
+			throw error;
+		}
+	};
+	try {
+		await assert.rejects(casesRepository.createResponseDocuments("case-1", PATIENT.userId, [
+			{ fileName: "first.pdf", contentType: "application/pdf", sizeBytes: 12, storageKey: "first-key" },
+			{ fileName: "second.pdf", contentType: "application/pdf", sizeBytes: 12, storageKey: "second-key" },
+		], resumedAt), /second document write failed/);
+		assert.deepEqual(state, {
+			status: "MoreInfoRequested",
+			slaPauseHistory: [{ pausedAt: "2026-10-22T12:00:00.000Z", resumedAt: null }],
+			fulfilledAt: null,
+			documentIds: [],
+		});
+	} finally {
+		prismaClient.$transaction = originalTransaction;
 	}
 });

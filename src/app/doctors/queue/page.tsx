@@ -18,6 +18,7 @@ interface QueueCase {
 	urgencyTier: "Standard" | "Urgent" | null;
 	status: string;
 	doctorId: string | null;
+	assignmentLockVersion: number;
 	submittedAt: string | null;
 	elapsedSlaMs: number | null;
 	remainingSlaMs: number | null;
@@ -59,6 +60,9 @@ export default function DoctorQueuePage() {
 	const [isForbidden, setIsForbidden] = useState(false);
 	const [error, setError] = useState("");
 	const [detailError, setDetailError] = useState("");
+	const [claimError, setClaimError] = useState("");
+	const [claimNotice, setClaimNotice] = useState("");
+	const [busyClaimCaseId, setBusyClaimCaseId] = useState<string | null>(null);
 	const [refreshKey, setRefreshKey] = useState(0);
 
 	useEffect(() => {
@@ -119,6 +123,38 @@ export default function DoctorQueuePage() {
 		}
 	}
 
+	async function claimCase(caseRecord: QueueCase) {
+		setBusyClaimCaseId(caseRecord.id);
+		setClaimError("");
+		setClaimNotice("");
+		try {
+			const response = await fetch(`/api/doctors/queue/${encodeURIComponent(caseRecord.id)}/claim`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ expectedVersion: caseRecord.assignmentLockVersion }),
+			});
+			const result = await response.json() as ApiResult<{ id: string }>;
+			if (response.status === 401 || response.status === 403) {
+				setIsUnauthorized(response.status === 401);
+				setIsForbidden(response.status === 403);
+				setCases([]);
+				return;
+			}
+			if (!response.ok || result.error || !result.data) {
+				setClaimError(result.error?.message ?? "Unable to claim this Case.");
+				if (response.status === 409) refreshQueue();
+				return;
+			}
+			setClaimNotice(`Case ${caseRecord.id} is now assigned to you.`);
+			refreshQueue();
+		} catch {
+			setClaimError("Unable to confirm whether the claim completed. Refreshing the queue.");
+			refreshQueue();
+		} finally {
+			setBusyClaimCaseId(null);
+		}
+	}
+
 	async function signOut() {
 		await fetch("/api/doctors/logout", { method: "POST" }).catch(() => undefined);
 		window.location.assign("/doctors/login");
@@ -151,6 +187,9 @@ export default function DoctorQueuePage() {
 					</div>
 				</div>
 
+				{claimNotice && <p className="admin-notice" role="status">{claimNotice}</p>}
+				{claimError && <p className="admin-error" role="alert">{claimError}</p>}
+
 				{isUnauthorized ? (
 					<section className="doctor-queue-message"><h2>Sign in required</h2><p>Your Doctor session is missing or expired.</p><Link href="/doctors/login">Doctor sign in</Link></section>
 				) : isForbidden ? (
@@ -181,6 +220,16 @@ export default function DoctorQueuePage() {
 										<strong className={caseRecord.remainingSlaMs !== null && caseRecord.remainingSlaMs <= 24 * 60 * 60 * 1000 ? "doctor-sla-near" : ""}>
 											{formatRemainingTime(caseRecord.remainingSlaMs)}
 										</strong>
+										{caseRecord.doctorId === null && caseRecord.status === "Submitted" && (
+											<button
+												className="doctor-open-case"
+												type="button"
+												disabled={busyClaimCaseId !== null}
+												onClick={() => void claimCase(caseRecord)}
+											>
+												{busyClaimCaseId === caseRecord.id ? "Claiming..." : "Claim Case"}
+											</button>
+										)}
 										<button className="doctor-open-case" type="button" disabled={isLoadingDetail} onClick={() => void openCase(caseRecord.id)}>
 											{activeCase?.id === caseRecord.id ? "Viewing" : "View Case"}
 										</button>

@@ -40,6 +40,7 @@ function createFixture(options: {
 	failSubmissionPersistence?: boolean;
 	failPayment?: boolean;
 	failSettings?: boolean;
+	includeAdditionalDoctors?: boolean;
 	standardCaseFee?: string;
 	urgentCaseFee?: string;
 } = {}) {
@@ -119,6 +120,32 @@ function createFixture(options: {
 				&& record.submittedAt !== null
 				&& (record.doctorId === null || record.doctorId === doctorId));
 		},
+		async listAdminAssignmentCases(): Promise<CaseRecord[]> {
+			return [...cases.values()].filter((record) => record.specialtyId !== null
+				&& ["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)
+				&& record.submittedAt !== null);
+		},
+		async assignCaseToDoctor(
+			caseId: string,
+			doctorId: string,
+			expectedVersion: number,
+			currentDoctorId: string | null,
+			currentStatus: CaseRecord["status"],
+			nextStatus: CaseRecord["status"],
+			incrementVersion: boolean,
+		): Promise<boolean> {
+			const record = cases.get(caseId);
+			if (!record || record.specialtyId === null || record.submittedAt === null
+				|| record.assignmentLockVersion !== expectedVersion || record.doctorId !== currentDoctorId || record.status !== currentStatus) return false;
+			cases.set(caseId, {
+				...record,
+				doctorId,
+				status: nextStatus,
+				assignmentLockVersion: record.assignmentLockVersion + (incrementVersion ? 1 : 0),
+				updatedAt: new Date(),
+			});
+			return true;
+		},
 		async classifySubmittedCase(caseId: string, specialtyId: string, expectedVersion: number, clearDoctorAssignment: boolean): Promise<CaseRecord | null> {
 			const record = cases.get(caseId);
 			if (!record || record.status !== "Submitted" || record.specialtyId !== null || record.assignmentLockVersion !== expectedVersion) return null;
@@ -189,7 +216,10 @@ function createFixture(options: {
 		id: "doctor-verified",
 		fullName: "Dr. Visible",
 		specialties: ["Cardiology"],
-	}];
+	}, ...(options.includeAdditionalDoctors ? [
+		{ id: "doctor-verified-b", fullName: "Dr. Another", specialties: ["Cardiology"] },
+		{ id: "doctor-neurology", fullName: "Dr. Neurology", specialties: ["Neurology"] },
+	] : [])];
 	let doctorLookupCalls = 0;
 	const doctors = {
 		async listVerifiedDoctors() {
@@ -197,7 +227,7 @@ function createFixture(options: {
 		},
 		async getVerifiedDoctor(doctorId: string) {
 			doctorLookupCalls += 1;
-			if (doctorId !== "doctor-verified") return null;
+			if (!verifiedDirectory.some(({ id }) => id === doctorId)) return null;
 			const now = new Date();
 			return {
 				id: doctorId,
@@ -210,7 +240,9 @@ function createFixture(options: {
 			};
 		},
 		async getVerifiedDoctorSpecialtyIds(doctorId: string): Promise<string[] | null> {
-			return doctorId === "doctor-verified" ? ["specialty-cardiology"] : null;
+			if (doctorId === "doctor-verified" || doctorId === "doctor-verified-b") return ["specialty-cardiology"];
+			if (doctorId === "doctor-neurology") return ["specialty-neurology"];
+			return null;
 		},
 		async listActiveSpecialties() {
 			return [{ id: "specialty-cardiology", name: "Cardiology" }, { id: "specialty-neurology", name: "Neurology" }];
@@ -349,6 +381,110 @@ test("Admin classification uses an active Specialty and atomically clears only a
 	await assert.rejects(racedFixture.service.classifySubmittedCase(ADMIN, racedRecord.id, "specialty-cardiology"), { code: "CASE_CLASSIFICATION_CONFLICT" });
 });
 
+test("Doctor claim atomically starts review, preserves Patient preference and SLA history, and rejects stale or competing claims", async () => {
+	const fixture = createFixture({ includeAdditionalDoctors: true });
+	const record = await createSubmittedCase(fixture);
+	await fixture.service.classifySubmittedCase(ADMIN, record.id, "specialty-cardiology");
+	const submittedAt = fixture.cases.get(record.id)!.submittedAt;
+	const pauseHistory = [{ pausedAt: "2026-10-20T12:00:00.000Z", resumedAt: "2026-10-21T12:00:00.000Z" }];
+	fixture.cases.set(record.id, { ...fixture.cases.get(record.id)!, slaPauseHistory: pauseHistory });
+	const expectedVersion = fixture.cases.get(record.id)!.assignmentLockVersion;
+
+	const claimed = await fixture.service.assignCaseToDoctor(VERIFIED_DOCTOR, record.id, undefined, expectedVersion);
+	assert.equal(claimed.doctorId, VERIFIED_DOCTOR.userId);
+	assert.equal(claimed.status, "UnderReview");
+	assert.equal(claimed.assignmentLockVersion, expectedVersion + 1);
+	assert.equal(claimed.selectedDoctorId, null);
+	assert.equal(fixture.cases.get(record.id)?.submittedAt, submittedAt);
+	assert.deepEqual(fixture.cases.get(record.id)?.slaPauseHistory, pauseHistory);
+	await assert.rejects(fixture.service.assignCaseToDoctor(VERIFIED_DOCTOR, record.id, undefined, expectedVersion), { code: "CASE_ASSIGNMENT_VERSION_CONFLICT" });
+
+	const preassigned = await createSubmittedCase(fixture, "Standard", "doctor-verified");
+	await fixture.service.classifySubmittedCase(ADMIN, preassigned.id, "specialty-cardiology");
+	const preassignedVersion = fixture.cases.get(preassigned.id)!.assignmentLockVersion;
+	await assert.rejects(fixture.service.assignCaseToDoctor({ userId: "doctor-verified-b", role: "doctor" }, preassigned.id, undefined, preassignedVersion), { code: "CASE_ALREADY_ASSIGNED" });
+
+	const competingFixture = createFixture({ includeAdditionalDoctors: true });
+	const competing = await createSubmittedCase(competingFixture);
+	await competingFixture.service.classifySubmittedCase(ADMIN, competing.id, "specialty-cardiology");
+	const competingVersion = competingFixture.cases.get(competing.id)!.assignmentLockVersion;
+	const attempts = await Promise.allSettled([
+		competingFixture.service.assignCaseToDoctor(VERIFIED_DOCTOR, competing.id, undefined, competingVersion),
+		competingFixture.service.assignCaseToDoctor({ userId: "doctor-verified-b", role: "doctor" }, competing.id, undefined, competingVersion),
+	]);
+	assert.equal(attempts.filter(({ status }) => status === "fulfilled").length, 1);
+	assert.equal(attempts.filter(({ status }) => status === "rejected").length, 1);
+	const losingAttempt = attempts.find(({ status }) => status === "rejected") as PromiseRejectedResult;
+	assert.ok(["CASE_ASSIGNMENT_VERSION_CONFLICT", "CASE_ALREADY_ASSIGNED"].includes(losingAttempt.reason.code));
+	assert.equal(competingFixture.cases.get(competing.id)?.assignmentLockVersion, competingVersion + 1);
+});
+
+test("Admin assignment confirms selected Doctors, starts an unassigned Case, and preserves reassignment state and no-op versions", async () => {
+	const fixture = createFixture({ includeAdditionalDoctors: true });
+	const selected = await createSubmittedCase(fixture, "Standard", "doctor-verified");
+	await fixture.service.classifySubmittedCase(ADMIN, selected.id, "specialty-cardiology");
+	const assignmentQueue = await fixture.service.listAdminAssignmentCases(ADMIN);
+	assert.equal(assignmentQueue.length, 1);
+	assert.equal(assignmentQueue[0].id, selected.id);
+	assert.deepEqual(assignmentQueue[0].availableDoctors.map(({ id }) => id), ["doctor-verified", "doctor-verified-b"]);
+	await assert.rejects(fixture.service.listAdminAssignmentCases(DOCTOR), { code: "CASE_ADMIN_ACCESS_DENIED" });
+	const selectedVersion = fixture.cases.get(selected.id)!.assignmentLockVersion;
+	const confirmed = await fixture.service.assignCaseToDoctor(ADMIN, selected.id, "doctor-verified", selectedVersion);
+	assert.equal(confirmed.status, "UnderReview");
+	assert.equal(confirmed.doctorId, "doctor-verified");
+	assert.equal(confirmed.assignmentLockVersion, selectedVersion);
+	assert.equal(fixture.cases.get(selected.id)?.assignmentLockVersion, selectedVersion);
+
+	const unassigned = await createSubmittedCase(fixture);
+	await fixture.service.classifySubmittedCase(ADMIN, unassigned.id, "specialty-cardiology");
+	const unassignedVersion = fixture.cases.get(unassigned.id)!.assignmentLockVersion;
+	const assigned = await fixture.service.assignCaseToDoctor(ADMIN, unassigned.id, "doctor-verified", unassignedVersion);
+	assert.equal(assigned.status, "UnderReview");
+	assert.equal(assigned.assignmentLockVersion, unassignedVersion + 1);
+
+	const submittedAt = new Date("2026-10-19T12:00:00.000Z");
+	const pauseHistory = [{ pausedAt: "2026-10-20T12:00:00.000Z", resumedAt: null }];
+	fixture.cases.set(selected.id, {
+		...fixture.cases.get(selected.id)!,
+		status: "MoreInfoRequested",
+		submittedAt,
+		slaPauseHistory: pauseHistory,
+	});
+	const reassignmentVersion = fixture.cases.get(selected.id)!.assignmentLockVersion;
+	const reassigned = await fixture.service.assignCaseToDoctor(ADMIN, selected.id, "doctor-verified-b", reassignmentVersion);
+	assert.equal(reassigned.doctorId, "doctor-verified-b");
+	assert.equal(reassigned.status, "MoreInfoRequested");
+	assert.equal(reassigned.assignmentLockVersion, reassignmentVersion + 1);
+	assert.equal(reassigned.selectedDoctorId, "doctor-verified");
+	assert.equal(fixture.cases.get(selected.id)?.submittedAt, submittedAt);
+	assert.deepEqual(fixture.cases.get(selected.id)?.slaPauseHistory, pauseHistory);
+	assert.equal(fixture.cases.get(selected.id)?.specialtyId, "specialty-cardiology");
+	await assert.rejects(fixture.service.getDocument(selected.documents[0].id, VERIFIED_DOCTOR), { code: "CASE_DOCUMENT_NOT_FOUND" });
+	assert.equal(new TextDecoder().decode((await fixture.service.getDocument(selected.documents[0].id, { userId: "doctor-verified-b", role: "doctor" })).bytes), "%PDF-1.7 report");
+
+	const noOpVersion = fixture.cases.get(selected.id)!.assignmentLockVersion;
+	const noOp = await fixture.service.assignCaseToDoctor(ADMIN, selected.id, "doctor-verified-b", noOpVersion);
+	assert.equal(noOp.assignmentLockVersion, noOpVersion);
+	assert.equal(fixture.cases.get(selected.id)?.assignmentLockVersion, noOpVersion);
+});
+
+test("assignment rejects inactive, unavailable, incompatible, and unauthorized targets without changing the current assignee", async () => {
+	const fixture = createFixture({ includeAdditionalDoctors: true });
+	const record = await createSubmittedCase(fixture, "Standard", "doctor-verified");
+	await fixture.service.classifySubmittedCase(ADMIN, record.id, "specialty-cardiology");
+	const before = fixture.cases.get(record.id)!;
+	await assert.rejects(fixture.service.assignCaseToDoctor(ADMIN, record.id, "doctor-neurology", before.assignmentLockVersion), { code: "CASE_ASSIGNMENT_DOCTOR_UNAVAILABLE" });
+	await assert.rejects(fixture.service.assignCaseToDoctor(ADMIN, record.id, "doctor-pending", before.assignmentLockVersion), { code: "CASE_ASSIGNMENT_DOCTOR_UNAVAILABLE" });
+	assert.equal(fixture.cases.get(record.id)?.doctorId, "doctor-verified");
+	assert.equal(new TextDecoder().decode((await fixture.service.getDocument(record.documents[0].id, VERIFIED_DOCTOR)).bytes), "%PDF-1.7 report");
+
+	fixture.cases.set(record.id, { ...before, status: "RefundPending" });
+	await assert.rejects(fixture.service.assignCaseToDoctor(ADMIN, record.id, "doctor-verified-b", before.assignmentLockVersion), { code: "CASE_ASSIGNMENT_CONFLICT" });
+	fixture.cases.set(record.id, { ...before, status: "Closed" });
+	await assert.rejects(fixture.service.assignCaseToDoctor(ADMIN, record.id, "doctor-verified-b", before.assignmentLockVersion), { code: "CASE_ASSIGNMENT_CONFLICT" });
+	await assert.rejects(fixture.service.assignCaseToDoctor(PATIENT, record.id, "doctor-verified-b", before.assignmentLockVersion), { code: "CASE_ASSIGNMENT_ACCESS_DENIED" });
+});
+
 test("Doctor queue filters classification, specialty, status, and assignment, with Urgent first and shortest SLA next", async () => {
 	const fixture = createFixture();
 	const urgent = await createSubmittedCase(fixture, "Urgent");
@@ -369,6 +505,7 @@ test("Doctor queue filters classification, specialty, status, and assignment, wi
 	const queue = await fixture.service.listDoctorQueue(VERIFIED_DOCTOR);
 	assert.deepEqual(queue.map(({ id }) => id), [urgent.id, standardDueSoon.id, standardLater.id]);
 	assert.equal(queue[0].urgencyTier, "Urgent");
+	assert.equal(queue[0].assignmentLockVersion, fixture.cases.get(urgent.id)?.assignmentLockVersion);
 	assert.equal(queue[1].remainingSlaMs! < queue[2].remainingSlaMs!, true);
 	assert.equal(queue.some(({ id }) => id === unclassified.id || id === otherSpecialty.id || id === assignedElsewhere.id), false);
 	assert.equal((await fixture.service.getDoctorCase(VERIFIED_DOCTOR, urgent.id)).id, urgent.id);
@@ -803,5 +940,63 @@ test("classification repository uses the expected assignment version and leaves 
 		});
 	} finally {
 		caseDelegate.updateMany = originalUpdateMany;
+	}
+});
+
+test("assignment repository compare-and-swaps the assignee, state, Specialty, and lock version", async () => {
+	const caseDelegate = prisma.case as unknown as {
+		updateMany: (args: unknown) => Promise<{ count: number }>;
+	};
+	const originalUpdateMany = caseDelegate.updateMany;
+	let updateArgs: unknown;
+	caseDelegate.updateMany = async (args) => { updateArgs = args; return { count: 1 }; };
+	try {
+		assert.equal(await casesRepository.assignCaseToDoctor("case-a", "doctor-a", 7, null, "Submitted", "UnderReview", true), true);
+		assert.deepEqual(updateArgs, {
+			where: {
+				id: "case-a",
+				specialtyId: { not: null },
+				submittedAt: { not: null },
+				status: "Submitted",
+				doctorId: null,
+				assignmentLockVersion: 7,
+			},
+			data: { doctorId: "doctor-a", status: "UnderReview", assignmentLockVersion: { increment: 1 } },
+		});
+		assert.equal(await casesRepository.assignCaseToDoctor("case-a", "doctor-a", 7, "doctor-a", "Submitted", "UnderReview", false), true);
+		assert.deepEqual((updateArgs as { data: unknown }).data, { doctorId: "doctor-a", status: "UnderReview" });
+	} finally {
+		caseDelegate.updateMany = originalUpdateMany;
+	}
+});
+
+test("Admin assignment repository selects only classified active review Cases and minimal fields", async () => {
+	const caseDelegate = prisma.case as unknown as { findMany: (args: unknown) => Promise<unknown[]> };
+	const originalFindMany = caseDelegate.findMany;
+	let query: unknown;
+	caseDelegate.findMany = async (args) => { query = args; return []; };
+	try {
+		assert.deepEqual(await casesRepository.listAdminAssignmentCases(), []);
+		assert.deepEqual(query, {
+			where: {
+				specialtyId: { not: null },
+				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+				submittedAt: { not: null },
+			},
+			orderBy: [{ urgencyTier: "desc" }, { submittedAt: "asc" }],
+			select: {
+				id: true,
+				affectedBodyArea: true,
+				condition: true,
+				specialtyId: true,
+				urgencyTier: true,
+				status: true,
+				doctorId: true,
+				submittedAt: true,
+				assignmentLockVersion: true,
+			},
+		});
+	} finally {
+		caseDelegate.findMany = originalFindMany;
 	}
 });

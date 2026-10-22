@@ -10,6 +10,11 @@ import type { StorageProvider } from "../../shared/storage-provider";
 import type { Prisma } from "../../generated/prisma/client";
 import {
 	CaseAccessDeniedError,
+	CaseAlreadyAssignedError,
+	CaseAssignmentAccessDeniedError,
+	CaseAssignmentConflictError,
+	CaseAssignmentDoctorUnavailableError,
+	CaseAssignmentVersionConflictError,
 	CaseAdminAccessDeniedError,
 	CaseClassificationConflictError,
 	CaseDoctorAccessDeniedError,
@@ -38,7 +43,8 @@ type CasesRepository = Pick<
 	typeof casesRepository,
 	| "createDraft" | "findByCreationRequestId" | "findLatestDraft" | "updateDraft" | "updateDraftDoctorSelection"
 	| "updateCaseToSubmitted" | "findById" | "listUnclassifiedSubmittedCases" | "listDoctorQueue"
-	| "classifySubmittedCase" | "findDoctorVisibleCase" | "createDocuments" | "findDocumentById" | "deleteDocument"
+	| "listAdminAssignmentCases" | "assignCaseToDoctor" | "classifySubmittedCase" | "findDoctorVisibleCase"
+	| "createDocuments" | "findDocumentById" | "deleteDocument"
 >;
 
 type DoctorsService = Pick<
@@ -179,6 +185,7 @@ function doctorCaseSummary(record: CaseRecord, now: Date) {
 		urgencyTier: record.urgencyTier,
 		status: record.status,
 		doctorId: record.doctorId,
+		assignmentLockVersion: record.assignmentLockVersion,
 		submittedAt: record.submittedAt?.toISOString() ?? null,
 		elapsedSlaMs,
 		remainingSlaMs: elapsedSlaMs === null ? null : Math.max(0, CASE_RESPONSE_SLA_MS - elapsedSlaMs),
@@ -509,6 +516,117 @@ export function createCasesService(
 				doctorId: classified.doctorId,
 				selectedDoctorId: classified.selectedDoctorId,
 				submittedAt: classified.submittedAt?.toISOString() ?? null,
+			};
+		},
+
+		async listAdminAssignmentCases(caller: AuthContext) {
+			assertAdmin(caller);
+			const [records, verifiedDoctors, specialties] = await Promise.all([
+				repository.listAdminAssignmentCases(),
+				doctors.listVerifiedDoctors(),
+				doctors.listActiveSpecialties(),
+			]);
+			const specialtyIdsByName = new Map(specialties.map(({ id, name }) => [name, id]));
+			const doctorSpecialties = new Map(verifiedDoctors.map((doctor) => [
+				doctor.id,
+				doctor.specialties.flatMap((name) => {
+					const id = specialtyIdsByName.get(name);
+					return id ? [id] : [];
+				}),
+			]));
+			const doctorNames = new Map(verifiedDoctors.map(({ id, fullName }) => [id, fullName]));
+			return records.map((record) => ({
+				id: record.id,
+				affectedBodyArea: record.affectedBodyArea,
+				condition: record.condition,
+				specialtyId: record.specialtyId,
+				urgencyTier: record.urgencyTier,
+				status: record.status,
+				doctorId: record.doctorId,
+				assignedDoctorName: record.doctorId ? doctorNames.get(record.doctorId) ?? null : null,
+				availableDoctors: verifiedDoctors
+					.filter(({ id }) => record.specialtyId !== null && doctorSpecialties.get(id)?.includes(record.specialtyId))
+					.map(({ id, fullName }) => ({ id, fullName })),
+				submittedAt: record.submittedAt?.toISOString() ?? null,
+				assignmentLockVersion: record.assignmentLockVersion,
+			}));
+		},
+
+		async assignCaseToDoctor(caller: AuthContext, caseId: string, requestedDoctorId: string | undefined, expectedVersion: number) {
+			if (caller.role !== "admin" && caller.role !== "doctor") throw new CaseAssignmentAccessDeniedError();
+			if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
+				throw new InvalidCaseInputError("expectedVersion must be a non-negative integer.");
+			}
+			const isAdmin = caller.role === "admin";
+			const targetDoctorId = isAdmin ? requestedDoctorId?.trim() : caller.userId;
+			if (!targetDoctorId) throw new InvalidCaseInputError("doctorId must be a non-empty string.");
+
+			const record = await repository.findById(caseId);
+			if (!record) throw new CaseNotFoundError();
+			if (record.assignmentLockVersion !== expectedVersion) throw new CaseAssignmentVersionConflictError();
+			if (!record.specialtyId || !record.submittedAt
+				|| !["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)) {
+				throw new CaseAssignmentConflictError();
+			}
+			const targetSpecialtyIds = await doctors.getVerifiedDoctorSpecialtyIds(targetDoctorId);
+			if (!targetSpecialtyIds?.includes(record.specialtyId)) throw new CaseAssignmentDoctorUnavailableError();
+
+			if (!isAdmin) {
+				if (record.status !== "Submitted") throw new CaseAssignmentConflictError();
+				if (record.doctorId !== null) throw new CaseAlreadyAssignedError();
+			} else if (record.doctorId === targetDoctorId && record.status !== "Submitted") {
+				return {
+					id: record.id,
+					doctorId: record.doctorId,
+					selectedDoctorId: record.selectedDoctorId,
+					status: record.status,
+					assignmentLockVersion: record.assignmentLockVersion,
+					submittedAt: record.submittedAt.toISOString(),
+				};
+			}
+
+			const assignmentChanged = record.doctorId !== targetDoctorId;
+			const startsReview = record.status === "Submitted"
+				&& (record.doctorId === null || record.doctorId === targetDoctorId);
+			const nextStatus = startsReview ? "UnderReview" : record.status;
+			if (nextStatus !== record.status && !canTransitionCase(record.status, nextStatus)) {
+				throw new CaseAssignmentConflictError();
+			}
+			const changed = assignmentChanged || nextStatus !== record.status;
+			if (!changed) {
+				return {
+					id: record.id,
+					doctorId: record.doctorId,
+					selectedDoctorId: record.selectedDoctorId,
+					status: record.status,
+					assignmentLockVersion: record.assignmentLockVersion,
+					submittedAt: record.submittedAt.toISOString(),
+				};
+			}
+
+			const assigned = await repository.assignCaseToDoctor(
+				caseId,
+				targetDoctorId,
+				expectedVersion,
+				record.doctorId,
+				record.status,
+				nextStatus,
+				assignmentChanged,
+			);
+			if (!assigned) {
+				const current = await repository.findById(caseId);
+				if (!current) throw new CaseNotFoundError();
+				if (current.assignmentLockVersion !== expectedVersion) throw new CaseAssignmentVersionConflictError();
+				if (!isAdmin && current.doctorId !== null) throw new CaseAlreadyAssignedError();
+				throw new CaseAssignmentConflictError();
+			}
+			return {
+				id: record.id,
+				doctorId: targetDoctorId,
+				selectedDoctorId: record.selectedDoctorId,
+				status: nextStatus,
+				assignmentLockVersion: expectedVersion + (assignmentChanged ? 1 : 0),
+				submittedAt: record.submittedAt.toISOString(),
 			};
 		},
 

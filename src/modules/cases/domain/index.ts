@@ -89,6 +89,46 @@ export class CaseClassificationConflictError extends DomainError {
 	}
 }
 
+export class CaseAssignmentAccessDeniedError extends DomainError {
+	readonly code = "CASE_ASSIGNMENT_ACCESS_DENIED";
+
+	constructor() {
+		super("A Doctor or Admin session is required to assign a Case.");
+	}
+}
+
+export class CaseAssignmentVersionConflictError extends DomainError {
+	readonly code = "CASE_ASSIGNMENT_VERSION_CONFLICT";
+
+	constructor() {
+		super("This Case changed while you were viewing it. Refresh and try again.");
+	}
+}
+
+export class CaseAlreadyAssignedError extends DomainError {
+	readonly code = "CASE_ALREADY_ASSIGNED";
+
+	constructor() {
+		super("This Case has already been claimed by another Doctor.");
+	}
+}
+
+export class CaseAssignmentConflictError extends DomainError {
+	readonly code = "CASE_ASSIGNMENT_CONFLICT";
+
+	constructor() {
+		super("This Case is no longer available for assignment.");
+	}
+}
+
+export class CaseAssignmentDoctorUnavailableError extends DomainError {
+	readonly code = "CASE_ASSIGNMENT_DOCTOR_UNAVAILABLE";
+
+	constructor() {
+		super("Choose a currently Verified Doctor in this Case's Specialty.");
+	}
+}
+
 export class CaseAccessDeniedError extends DomainError {
 	readonly code = "CASE_ACCESS_DENIED";
 

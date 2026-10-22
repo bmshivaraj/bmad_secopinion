@@ -138,6 +138,29 @@ export async function parseCaseClassificationRequest(request: Request): Promise<
 	return { specialtyId: specialtyId.trim() };
 }
 
+export async function parseCaseAssignmentRequest(request: Request): Promise<{ doctorId?: string; expectedVersion: number }> {
+	let body: unknown;
+	try {
+		body = await request.json();
+	} catch {
+		throw new InvalidCaseInputError("Request body must be valid JSON.");
+	}
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		throw new InvalidCaseInputError("Request body must be a JSON object.");
+	}
+	const values = body as Record<string, unknown>;
+	if (!Number.isSafeInteger(values.expectedVersion) || (values.expectedVersion as number) < 0) {
+		throw new InvalidCaseInputError("expectedVersion must be a non-negative integer.");
+	}
+	if (values.doctorId !== undefined && (typeof values.doctorId !== "string" || !values.doctorId.trim())) {
+		throw new InvalidCaseInputError("doctorId must be a non-empty string.");
+	}
+	return {
+		expectedVersion: values.expectedVersion as number,
+		...(typeof values.doctorId === "string" ? { doctorId: values.doctorId.trim() } : {}),
+	};
+}
+
 export async function parseCaseDocumentUploads(request: Request): Promise<CaseDocumentUpload[]> {
 	const contentLength = Number(request.headers.get("content-length"));
 	if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_SIZE) {
@@ -239,6 +262,11 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	CASE_DOCTOR_ACCESS_DENIED: 403,
 	CASE_NOT_FOUND: 404,
 	CASE_CLASSIFICATION_CONFLICT: 409,
+	CASE_ASSIGNMENT_ACCESS_DENIED: 403,
+	CASE_ASSIGNMENT_VERSION_CONFLICT: 409,
+	CASE_ALREADY_ASSIGNED: 409,
+	CASE_ASSIGNMENT_CONFLICT: 409,
+	CASE_ASSIGNMENT_DOCTOR_UNAVAILABLE: 409,
 	CASE_DOCUMENT_NOT_FOUND: 404,
 	CASE_DOCUMENT_REQUIRED: 409,
 	CASE_DOCTOR_SELECTION_CONFLICT: 409,

@@ -1,7 +1,7 @@
 // Cases module's own DB access (AD-2) -- no other module may query these tables directly.
 import { prisma } from "../../shared/prisma-client";
 import type { Prisma } from "../../generated/prisma/client";
-import type { CaseDocumentRecord, CaseDraftInput, CaseRecord } from "./domain";
+import type { CaseDocumentRecord, CaseDraftInput, CaseRecord, CaseStatus } from "./domain";
 
 const draftInclude = { documents: { orderBy: { createdAt: "asc" as const } } } as const;
 
@@ -83,6 +83,55 @@ export const casesRepository = {
 			},
 			include: draftInclude,
 		});
+	},
+
+	async listAdminAssignmentCases() {
+		return prisma.case.findMany({
+			where: {
+				specialtyId: { not: null },
+				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+				submittedAt: { not: null },
+			},
+			orderBy: [{ urgencyTier: "desc" }, { submittedAt: "asc" }],
+			select: {
+				id: true,
+				affectedBodyArea: true,
+				condition: true,
+				specialtyId: true,
+				urgencyTier: true,
+				status: true,
+				doctorId: true,
+				submittedAt: true,
+				assignmentLockVersion: true,
+			},
+		});
+	},
+
+	async assignCaseToDoctor(
+		caseId: string,
+		doctorId: string,
+		expectedVersion: number,
+		currentDoctorId: string | null,
+		currentStatus: CaseStatus,
+		nextStatus: CaseStatus,
+		incrementVersion: boolean,
+	): Promise<boolean> {
+		const updated = await prisma.case.updateMany({
+			where: {
+				id: caseId,
+				specialtyId: { not: null },
+				submittedAt: { not: null },
+				status: currentStatus,
+				doctorId: currentDoctorId,
+				assignmentLockVersion: expectedVersion,
+			},
+			data: {
+				doctorId,
+				status: nextStatus,
+				...(incrementVersion ? { assignmentLockVersion: { increment: 1 } } : {}),
+			},
+		});
+		return updated.count === 1;
 	},
 
 	async classifySubmittedCase(caseId: string, specialtyId: string, expectedVersion: number, clearDoctorAssignment: boolean): Promise<CaseRecord | null> {

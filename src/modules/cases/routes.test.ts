@@ -7,6 +7,7 @@ process.env.JWT_SECRET ??= "cases-route-test-secret";
 const {
 	parseCaseDocumentUploads,
 	parseCaseClassificationRequest,
+	parseCaseAssignmentRequest,
 	parseCaseDraftRequest,
 	parseCaseSubmissionRequest,
 	parseDoctorSelectionRequest,
@@ -16,15 +17,18 @@ const {
 } = await import("./routes");
 const { GET: getDocumentRoute } = await import("../../app/api/cases/documents/[documentId]/route");
 const { GET: getUnclassifiedCasesRoute } = await import("../../app/api/cases/unclassified/route");
+const { GET: getAdminAssignmentCasesRoute } = await import("../../app/api/admin/cases/assignment/route");
+const { POST: postAdminCaseAssignmentRoute } = await import("../../app/api/admin/cases/[caseId]/assignment/route");
 const { PATCH: patchCaseSpecialtyRoute } = await import("../../app/api/cases/[caseId]/specialty/route");
 const { GET: getDoctorQueueRoute } = await import("../../app/api/doctors/queue/route");
 const { GET: getDoctorCaseRoute } = await import("../../app/api/doctors/queue/[caseId]/route");
+const { POST: postDoctorClaimRoute } = await import("../../app/api/doctors/queue/[caseId]/claim/route");
 const { GET: getDoctorDirectoryRoute } = await import("../../app/api/cases/doctors/route");
 const { PATCH: patchDoctorSelectionRoute } = await import("../../app/api/cases/[caseId]/selection/route");
 const { POST: postCaseSubmitRoute } = await import("../../app/api/cases/[caseId]/submit/route");
 const { GET: getCaseFeesRoute } = await import("../../app/api/cases/fees/route");
 const { casesService } = await import("./service");
-const { CaseAccessDeniedError } = await import("./domain");
+const { CaseAccessDeniedError, CaseAssignmentVersionConflictError } = await import("./domain");
 const { signAuthToken } = await import("../../shared/auth-context");
 
 test("draft parser accepts the approved fields and rejects malformed JSON shapes", async () => {
@@ -59,6 +63,118 @@ test("draft parser accepts the approved fields and rejects malformed JSON shapes
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ specialtyId: " " }),
 	})), { code: "VALIDATION_ERROR" });
+	assert.deepEqual(await parseCaseAssignmentRequest(new Request("http://localhost", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ doctorId: " doctor-1 ", expectedVersion: 4 }),
+	})), { doctorId: "doctor-1", expectedVersion: 4 });
+	await assert.rejects(parseCaseAssignmentRequest(new Request("http://localhost", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ expectedVersion: -1 }),
+	})), { code: "VALIDATION_ERROR" });
+});
+
+test("Admin assignment and Doctor claim routes enforce roles and return private envelopes", async () => {
+	const originals = {
+		listAdminAssignmentCases: casesService.listAdminAssignmentCases,
+		assignCaseToDoctor: casesService.assignCaseToDoctor,
+	};
+	const assignments: { role: string; caseId: string; doctorId: string | undefined; expectedVersion: number }[] = [];
+	casesService.listAdminAssignmentCases = async () => [{
+		id: "case-assignable",
+		affectedBodyArea: "Knee",
+		condition: "Pain",
+		recommendation: "Review",
+		additionalDetails: "",
+		specialtyId: "specialty-cardio",
+		urgencyTier: "Urgent",
+		status: "Submitted",
+		doctorId: null,
+		assignedDoctorName: null,
+		availableDoctors: [{ id: "doctor-1", fullName: "Dr. One" }],
+		submittedAt: "2026-10-22T12:00:00.000Z",
+		assignmentLockVersion: 3,
+	}];
+	casesService.assignCaseToDoctor = async (caller, caseId, doctorId, expectedVersion) => {
+		assignments.push({ role: caller.role, caseId, doctorId, expectedVersion });
+		if (expectedVersion !== 3) throw new CaseAssignmentVersionConflictError();
+		return { id: caseId, doctorId: doctorId ?? caller.userId, selectedDoctorId: null, status: "UnderReview", assignmentLockVersion: expectedVersion + 1, submittedAt: "2026-10-22T12:00:00.000Z" };
+	};
+	try {
+		const adminToken = signAuthToken({ userId: "admin-1", role: "admin" });
+		const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
+		const queue = await getAdminAssignmentCasesRoute(new Request("http://localhost/api/admin/cases/assignment", {
+			headers: { cookie: `admin_session=${adminToken}` },
+		}));
+		assert.equal(queue.status, 200);
+		assert.equal(queue.headers.get("cache-control"), "private, no-store");
+		assert.equal((await queue.json() as { data: { id: string }[] }).data[0].id, "case-assignable");
+
+		const adminAssignment = await postAdminCaseAssignmentRoute(new Request("http://localhost/api/admin/cases/case-assignable/assignment", {
+			method: "POST",
+			headers: { cookie: `admin_session=${adminToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ doctorId: "doctor-1", expectedVersion: 3 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(adminAssignment.status, 200);
+		assert.equal(adminAssignment.headers.get("cache-control"), "private, no-store");
+		assert.deepEqual(assignments[0], { role: "admin", caseId: "case-assignable", doctorId: "doctor-1", expectedVersion: 3 });
+
+		const claim = await postDoctorClaimRoute(new Request("http://localhost/api/doctors/queue/case-assignable/claim", {
+			method: "POST",
+			headers: { cookie: `doctor_session=${doctorToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ expectedVersion: 3 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(claim.status, 200);
+		assert.equal(claim.headers.get("cache-control"), "private, no-store");
+		assert.deepEqual(assignments[1], { role: "doctor", caseId: "case-assignable", doctorId: undefined, expectedVersion: 3 });
+		const wrongRoleClaim = await postDoctorClaimRoute(new Request("http://localhost/api/doctors/queue/case-assignable/claim", {
+			method: "POST",
+			headers: { cookie: `admin_session=${adminToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ expectedVersion: 3 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(wrongRoleClaim.status, 401);
+		const proxyClaim = await postDoctorClaimRoute(new Request("http://localhost/api/doctors/queue/case-assignable/claim", {
+			method: "POST",
+			headers: { cookie: `doctor_session=${doctorToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ doctorId: "doctor-2", expectedVersion: 3 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(proxyClaim.status, 400);
+
+		const unauthorized = await getAdminAssignmentCasesRoute(new Request("http://localhost/api/admin/cases/assignment"));
+		assert.equal(unauthorized.status, 401);
+		const wrongRole = await getAdminAssignmentCasesRoute(new Request("http://localhost/api/admin/cases/assignment", {
+			headers: { cookie: `admin_session=${doctorToken}` },
+		}));
+		assert.equal(wrongRole.status, 403);
+		const unauthenticatedAssignment = await postAdminCaseAssignmentRoute(new Request("http://localhost/api/admin/cases/case-assignable/assignment", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ doctorId: "doctor-1", expectedVersion: 3 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(unauthenticatedAssignment.status, 401);
+		const wrongRoleAssignment = await postAdminCaseAssignmentRoute(new Request("http://localhost/api/admin/cases/case-assignable/assignment", {
+			method: "POST",
+			headers: { cookie: `admin_session=${doctorToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ doctorId: "doctor-1", expectedVersion: 3 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(wrongRoleAssignment.status, 403);
+		const staleAssignment = await postAdminCaseAssignmentRoute(new Request("http://localhost/api/admin/cases/case-assignable/assignment", {
+			method: "POST",
+			headers: { cookie: `admin_session=${adminToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ doctorId: "doctor-1", expectedVersion: 2 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(staleAssignment.status, 409);
+		assert.equal((await staleAssignment.json() as { error: { code: string } }).error.code, "CASE_ASSIGNMENT_VERSION_CONFLICT");
+		const unauthenticatedClaim = await postDoctorClaimRoute(new Request("http://localhost/api/doctors/queue/case-assignable/claim", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ expectedVersion: 3 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(unauthenticatedClaim.status, 401);
+	} finally {
+		Object.assign(casesService, originals);
+	}
 });
 
 test("classification and Doctor queue routes use role sessions and private envelopes", async () => {
@@ -95,6 +211,7 @@ test("classification and Doctor queue routes use role sessions and private envel
 		urgencyTier: "Urgent",
 		status: "Submitted",
 		doctorId: null,
+		assignmentLockVersion: 0,
 		submittedAt: "2026-10-22T12:00:00.000Z",
 		elapsedSlaMs: 1000,
 		remainingSlaMs: 431999000,
@@ -109,6 +226,7 @@ test("classification and Doctor queue routes use role sessions and private envel
 		urgencyTier: "Urgent",
 		status: "Submitted",
 		doctorId: "doctor-1",
+		assignmentLockVersion: 0,
 		submittedAt: "2026-10-22T12:00:00.000Z",
 		elapsedSlaMs: 1000,
 		remainingSlaMs: 431999000,
@@ -138,7 +256,9 @@ test("classification and Doctor queue routes use role sessions and private envel
 		}));
 		assert.equal(queue.status, 200);
 		assert.equal(queue.headers.get("cache-control"), "private, no-store");
-		assert.equal((await queue.json() as { data: { id: string }[] }).data[0].id, "case-1");
+		const queueData = (await queue.json() as { data: { id: string; assignmentLockVersion: number }[] }).data;
+		assert.equal(queueData[0].id, "case-1");
+		assert.equal(queueData[0].assignmentLockVersion, 0);
 		const detail = await getDoctorCaseRoute(new Request("http://localhost/api/doctors/queue/case-1", {
 			headers: { cookie: `doctor_session=${doctorToken}` },
 		}), { params: Promise.resolve({ caseId: "case-1" }) });

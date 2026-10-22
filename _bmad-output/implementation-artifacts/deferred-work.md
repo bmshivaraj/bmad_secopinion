@@ -105,3 +105,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-1-specialty-filtered-case-queue-with-sla-visibility.md`
   summary: Add a database-backed regression test that verifies the Story 4.1 migration backfills `submitted_at` for pre-existing Submitted Cases.
   evidence: The SQL backfills from `updated_at`, but PostgreSQL rejects the configured credentials with `P1000`, so the migration could not be exercised against a pre-migration Case row.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-2-claim-or-admin-assign-a-case.md`
+  summary: Add a database-backed concurrent claim test against the production compare-and-swap repository write.
+  evidence: The service test races in-memory fixture writes and the repository test stubs `updateMany`; PostgreSQL credentials fail with `P1000`, so an actual database race could not be exercised.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-2-claim-or-admin-assign-a-case.md`
+  summary: Add page-level interaction coverage for Doctor claims and Admin assignment selection/refresh states.
+  evidence: The repository has no page or browser test harness; route and service tests do not render or click either page's controls.

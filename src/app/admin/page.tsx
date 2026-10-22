@@ -38,6 +38,25 @@ interface UnclassifiedCase {
   submittedAt: string | null;
 }
 
+interface AssignmentDoctor {
+  id: string;
+  fullName: string;
+}
+
+interface AssignmentCase {
+  id: string;
+  affectedBodyArea: string;
+  condition: string;
+  specialtyId: string | null;
+  urgencyTier: "Standard" | "Urgent" | null;
+  status: string;
+  doctorId: string | null;
+  assignedDoctorName: string | null;
+  availableDoctors: AssignmentDoctor[];
+  submittedAt: string | null;
+  assignmentLockVersion: number;
+}
+
 interface ApiResult<T> {
   data: T | null;
   error: { message: string } | null;
@@ -53,15 +72,19 @@ export default function AdminPage() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [specialties, setSpecialties] = useState<Specialty[]>([]);
   const [unclassifiedCases, setUnclassifiedCases] = useState<UnclassifiedCase[]>([]);
+  const [assignmentCases, setAssignmentCases] = useState<AssignmentCase[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSpecialtiesLoading, setIsSpecialtiesLoading] = useState(true);
   const [isCasesLoading, setIsCasesLoading] = useState(true);
+  const [isAssignmentQueueLoading, setIsAssignmentQueueLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAddingSpecialty, setIsAddingSpecialty] = useState(false);
   const [busyDoctorId, setBusyDoctorId] = useState<string | null>(null);
   const [busyCaseId, setBusyCaseId] = useState<string | null>(null);
+  const [busyAssignmentCaseId, setBusyAssignmentCaseId] = useState<string | null>(null);
   const [caseSpecialtySelections, setCaseSpecialtySelections] = useState<Record<string, string>>({});
+  const [caseAssignmentSelections, setCaseAssignmentSelections] = useState<Record<string, string>>({});
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -69,6 +92,8 @@ export default function AdminPage() {
   const [specialtyNotice, setSpecialtyNotice] = useState("");
   const [casesError, setCasesError] = useState("");
   const [casesNotice, setCasesNotice] = useState("");
+  const [assignmentError, setAssignmentError] = useState("");
+  const [assignmentNotice, setAssignmentNotice] = useState("");
 
   useEffect(() => {
     let isCurrent = true;
@@ -150,9 +175,40 @@ export default function AdminPage() {
       }
     }
 
+    async function loadAssignmentCases() {
+      setIsAssignmentQueueLoading(true);
+      setAssignmentError("");
+      try {
+        const response = await fetch("/api/admin/cases/assignment", { cache: "no-store" });
+        const result = await response.json() as ApiResult<AssignmentCase[]>;
+        if (!isCurrent) return;
+        if (response.status === 401 || response.status === 403) {
+          setIsAuthenticated(false);
+          setAssignmentCases([]);
+          return;
+        }
+        if (!response.ok || result.error || !result.data) {
+          setAssignmentError(result.error?.message ?? "Unable to load active Cases.");
+          return;
+        }
+        setIsAuthenticated(true);
+        setAssignmentCases(result.data);
+        setCaseAssignmentSelections((current) => {
+          const availableByCase = new Map(result.data!.map(({ id, availableDoctors }) => [id, new Set(availableDoctors.map(({ id: doctorId }) => doctorId))]));
+          return Object.fromEntries(Object.entries(current).filter(([caseId, doctorId]) => availableByCase.get(caseId)?.has(doctorId)));
+        });
+        setAssignmentError("");
+      } catch {
+        if (isCurrent) setAssignmentError("Unable to connect. Please try again.");
+      } finally {
+        if (isCurrent) setIsAssignmentQueueLoading(false);
+      }
+    }
+
     void loadQueue();
     void loadSpecialties();
     void loadUnclassifiedCases();
+    void loadAssignmentCases();
     return () => {
       isCurrent = false;
     };
@@ -249,6 +305,48 @@ export default function AdminPage() {
     }
   }
 
+  async function handleAssignCase(caseRecord: AssignmentCase) {
+    const defaultDoctorId = caseRecord.availableDoctors.some(({ id }) => id === caseRecord.doctorId)
+      ? caseRecord.doctorId
+      : caseRecord.availableDoctors[0]?.id;
+    const doctorId = caseAssignmentSelections[caseRecord.id] ?? defaultDoctorId;
+    if (!doctorId || busyAssignmentCaseId) return;
+    setBusyAssignmentCaseId(caseRecord.id);
+    setAssignmentError("");
+    setAssignmentNotice("");
+    try {
+      const response = await fetch(`/api/admin/cases/${encodeURIComponent(caseRecord.id)}/assignment`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ doctorId, expectedVersion: caseRecord.assignmentLockVersion }),
+      });
+      const result = await response.json() as ApiResult<{ doctorId: string; status: string }>;
+      if (response.status === 401 || response.status === 403) {
+        setIsAuthenticated(false);
+        return;
+      }
+      if (!response.ok || result.error || !result.data) {
+        if (response.status === 409) setRefreshKey((value) => value + 1);
+        setAssignmentNotice(response.status === 409
+          ? `${result.error?.message ?? "Assignment conflict."} The list is refreshing; verify the current assignee before retrying.`
+          : result.error?.message ?? "Unable to assign this Case.");
+        return;
+      }
+      const targetName = caseRecord.availableDoctors.find(({ id }) => id === result.data!.doctorId)?.fullName ?? "the selected Doctor";
+      setAssignmentNotice(result.data.doctorId === caseRecord.doctorId && result.data.status === caseRecord.status
+        ? `No assignment change. Case ${caseRecord.id} remains assigned to ${targetName}.`
+        : result.data.status === "UnderReview" && caseRecord.status === "Submitted"
+          ? `Review started for Case ${caseRecord.id} with ${targetName}.`
+          : `Case ${caseRecord.id} assigned to ${targetName}.`);
+      setRefreshKey((value) => value + 1);
+    } catch {
+      setAssignmentNotice("Unable to confirm the assignment. Refreshing the active Case list.");
+      setRefreshKey((value) => value + 1);
+    } finally {
+      setBusyAssignmentCaseId(null);
+    }
+  }
+
   async function handleAddSpecialty(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSpecialtiesLoading || isAddingSpecialty) return;
@@ -285,6 +383,7 @@ export default function AdminPage() {
       setIsAuthenticated(false);
       setApplications([]);
       setUnclassifiedCases([]);
+      setAssignmentCases([]);
       setSpecialties([]);
       setError("");
       setNotice("");
@@ -292,6 +391,8 @@ export default function AdminPage() {
       setSpecialtyNotice("");
       setCasesError("");
       setCasesNotice("");
+      setAssignmentError("");
+      setAssignmentNotice("");
       setRefreshKey((value) => value + 1);
     } catch {
       setError("Unable to sign out. Please try again.");
@@ -402,6 +503,75 @@ export default function AdminPage() {
                   </div>
                 </article>
               ))}
+            </div>
+          )}
+        </section>
+
+        <section className="admin-case-classification-section" aria-labelledby="admin-case-assignment-heading">
+          <div className="admin-heading-row">
+            <div>
+              <p className="admin-eyebrow">Case review</p>
+              <h1 id="admin-case-assignment-heading">Active Case assignments</h1>
+            </div>
+            <div className="admin-queue-actions">
+              {!isAssignmentQueueLoading && <p className="admin-queue-count">{assignmentCases.length} active</p>}
+              <button className="admin-signout" type="button" onClick={() => setRefreshKey((value) => value + 1)} disabled={isAssignmentQueueLoading || busyAssignmentCaseId !== null}>Refresh assignments</button>
+            </div>
+          </div>
+          {assignmentNotice && <p className="admin-notice" role="status">{assignmentNotice}</p>}
+          {assignmentError && <p className="admin-error" role="alert">{assignmentError}</p>}
+          {isAssignmentQueueLoading ? (
+            <p className="admin-muted" role="status">Loading active Cases...</p>
+          ) : assignmentError && assignmentCases.length === 0 ? (
+            <section className="admin-empty-state"><h2>Assignment queue unavailable</h2><p>Active Cases could not be loaded.</p></section>
+          ) : assignmentCases.length === 0 ? (
+            <section className="admin-empty-state"><h2>No active Cases</h2><p>There are no classified Cases awaiting or undergoing review.</p></section>
+          ) : (
+            <div className="admin-case-list">
+              {assignmentCases.map((caseRecord) => {
+                const defaultDoctorId = caseRecord.availableDoctors.some(({ id }) => id === caseRecord.doctorId)
+                  ? caseRecord.doctorId
+                  : caseRecord.availableDoctors[0]?.id ?? "";
+                const selectedDoctorId = caseAssignmentSelections[caseRecord.id] ?? defaultDoctorId;
+                const currentDoctorSelected = selectedDoctorId !== "" && selectedDoctorId === caseRecord.doctorId;
+                const actionLabel = currentDoctorSelected
+                  ? caseRecord.status === "Submitted" ? "Confirm review" : "Keep current"
+                  : caseRecord.doctorId ? "Reassign" : "Assign";
+                return (
+                  <article className="admin-case-row" key={caseRecord.id}>
+                    <div className="admin-case-description">
+                      <h2>{caseRecord.affectedBodyArea}</h2>
+                      <p>Case ID: {caseRecord.id}</p>
+                      <p>{caseRecord.condition}</p>
+                      <p><strong>Specialty:</strong> {specialties.find(({ id }) => id === caseRecord.specialtyId)?.name ?? caseRecord.specialtyId ?? "Unavailable"}</p>
+                      <p><strong>Status:</strong> {caseRecord.status.replace(/([a-z])([A-Z])/g, "$1 $2")} · <strong>Urgency:</strong> {caseRecord.urgencyTier ?? "Unavailable"}</p>
+                      <p><strong>Current Doctor:</strong> {caseRecord.assignedDoctorName ?? "Unassigned"}</p>
+                      <span>Submitted {caseRecord.submittedAt ? new Date(caseRecord.submittedAt).toLocaleString() : "time unavailable"}</span>
+                    </div>
+                    <div className="admin-case-classify-controls">
+                      <label className="sr-only" htmlFor={`case-doctor-${caseRecord.id}`}>Doctor for Case {caseRecord.id}</label>
+                      <select
+                        id={`case-doctor-${caseRecord.id}`}
+                        value={selectedDoctorId}
+                        onChange={(event) => setCaseAssignmentSelections((current) => ({ ...current, [caseRecord.id]: event.target.value }))}
+                        disabled={caseRecord.availableDoctors.length === 0 || busyAssignmentCaseId !== null}
+                      >
+                        {caseRecord.availableDoctors.length === 0
+                          ? <option value="">No verified Doctors in Specialty</option>
+                          : caseRecord.availableDoctors.map((doctor) => <option value={doctor.id} key={doctor.id}>{doctor.fullName}</option>)}
+                      </select>
+                      <button
+                        className="admin-decision admin-decision-approve"
+                        type="button"
+                        onClick={() => void handleAssignCase(caseRecord)}
+                        disabled={caseRecord.availableDoctors.length === 0 || busyAssignmentCaseId !== null}
+                      >
+                        {busyAssignmentCaseId === caseRecord.id ? "Saving..." : actionLabel}
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>

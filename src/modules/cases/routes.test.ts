@@ -10,6 +10,7 @@ const {
 	parseCaseAssignmentRequest,
 	parseCaseDraftRequest,
 	parseCaseDocumentRequest,
+	parseCaseOpinionRequest,
 	parseCaseSubmissionRequest,
 	parseDoctorSelectionRequest,
 	requireDocumentReaderContext,
@@ -30,6 +31,8 @@ const { POST: postCaseSubmitRoute } = await import("../../app/api/cases/[caseId]
 const { GET: getCaseFeesRoute } = await import("../../app/api/cases/fees/route");
 const { GET: getPatientCasesRoute } = await import("../../app/api/cases/route");
 const { POST: postDocumentRequestRoute } = await import("../../app/api/cases/[caseId]/document-requests/route");
+const { POST: postCaseOpinionRoute } = await import("../../app/api/cases/[caseId]/opinion/route");
+const { GET: getAdminCaseOpinionRoute } = await import("../../app/api/admin/cases/[caseId]/opinion/route");
 const { casesService } = await import("./service");
 const { CaseAccessDeniedError, CaseAssignmentVersionConflictError } = await import("./domain");
 const { signAuthToken } = await import("../../shared/auth-context");
@@ -235,6 +238,7 @@ test("classification and Doctor queue routes use role sessions and private envel
 		remainingSlaMs: 431999000,
 		documents: [],
 		documentRequests: [],
+		opinion: null,
 	});
 	try {
 		const adminToken = signAuthToken({ userId: "admin-1", role: "admin" });
@@ -295,7 +299,7 @@ test("document request and Patient Case list routes enforce role sessions and pr
 	casesService.requestDocuments = async (caller, caseId, note) => {
 		requestedBy = `${caller.userId}:${caseId}`;
 		requestedNote = note as string;
-		return { id: "request-1", note: requestedNote, createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null };
+		return { id: "request-1", note: requestedNote, createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null, closedAt: null };
 	};
 	casesService.getDoctorCase = async () => ({
 		id: "case-1",
@@ -312,7 +316,8 @@ test("document request and Patient Case list routes enforce role sessions and pr
 		elapsedSlaMs: 1000,
 		remainingSlaMs: 431999000,
 		documents: [],
-		documentRequests: [{ id: "request-1", note: requestedNote, createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null }],
+		documentRequests: [{ id: "request-1", note: requestedNote, createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null, closedAt: null }],
+		opinion: null,
 	});
 	casesService.listPatientCases = async (caller) => {
 		listedFor = caller.userId;
@@ -325,7 +330,8 @@ test("document request and Patient Case list routes enforce role sessions and pr
 			submittedAt: "2026-10-22T12:00:00.000Z",
 			updatedAt: "2026-10-22T12:01:00.000Z",
 			documents: [],
-			documentRequests: [{ id: "request-1", note: "Please attach a scan.", createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null }],
+			documentRequests: [{ id: "request-1", note: "Please attach a scan.", createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null, closedAt: null }],
+			opinion: null,
 		}] : [];
 	};
 	try {
@@ -373,6 +379,108 @@ test("document request and Patient Case list routes enforce role sessions and pr
 		assert.equal(wrongRoleList.status, 401);
 	} finally {
 		Object.assign(casesService, originals);
+	}
+});
+
+test("Opinion route requires a Doctor session, validates text input, and returns the closed detail privately", async () => {
+	const originals = {
+		submitOpinion: casesService.submitOpinion,
+		getDoctorCase: casesService.getDoctorCase,
+	};
+	let submittedBy = "";
+	let submittedText = "";
+	casesService.submitOpinion = async (caller, caseId, text) => {
+		submittedBy = `${caller.userId}:${caseId}`;
+		submittedText = text as string;
+		return { text: submittedText.trim(), createdAt: "2026-10-22T12:00:00.000Z" };
+	};
+	casesService.getDoctorCase = async () => ({
+		id: "case-1",
+		affectedBodyArea: "Knee",
+		condition: "Pain",
+		recommendation: "Review",
+		additionalDetails: "",
+		specialtyId: "specialty-cardio",
+		urgencyTier: "Standard",
+		status: "Closed",
+		doctorId: "doctor-1",
+		assignmentLockVersion: 0,
+		submittedAt: "2026-10-22T12:00:00.000Z",
+		elapsedSlaMs: 1000,
+		remainingSlaMs: 431999000,
+		documents: [],
+		documentRequests: [],
+		opinion: { text: submittedText.trim(), createdAt: "2026-10-22T12:00:00.000Z" },
+	});
+	try {
+		assert.equal(await parseCaseOpinionRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ opinion: "  Written opinion.  " }),
+		})), "  Written opinion.  ");
+		assert.equal(Array.from(await parseCaseOpinionRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ opinion: String.fromCodePoint(0x1f600).repeat(10000) }),
+		}))).length, 10000);
+		await assert.rejects(parseCaseOpinionRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ opinion: 12 }),
+		})), { code: "VALIDATION_ERROR" });
+		await assert.rejects(parseCaseOpinionRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ opinion: "x".repeat(65 * 1024) }),
+		})), { code: "UPLOAD_TOO_LARGE" });
+
+		const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
+		const response = await postCaseOpinionRoute(new Request("http://localhost/api/cases/case-1/opinion", {
+			method: "POST",
+			headers: { cookie: `doctor_session=${doctorToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ opinion: "Written opinion." }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("cache-control"), "private, no-store");
+		assert.equal(submittedBy, "doctor-1:case-1");
+		assert.equal(submittedText, "Written opinion.");
+		assert.equal((await response.json() as { data: { status: string; opinion: { text: string } } }).data.status, "Closed");
+
+		const unauthorized = await postCaseOpinionRoute(new Request("http://localhost/api/cases/case-1/opinion", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ opinion: "Written opinion." }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(unauthorized.status, 401);
+	} finally {
+		Object.assign(casesService, originals);
+	}
+});
+
+test("Admin Opinion route authenticates Admin and returns private Case Opinion data", async () => {
+	const originalGetAdminOpinion = casesService.getAdminOpinion;
+	let requestedBy = "";
+	casesService.getAdminOpinion = async (caller, caseId) => {
+		requestedBy = `${caller.userId}:${caseId}`;
+		return { text: "Final Opinion.", createdAt: "2026-10-22T12:00:00.000Z" };
+	};
+	try {
+		const adminToken = signAuthToken({ userId: "admin-1", role: "admin" });
+		const response = await getAdminCaseOpinionRoute(new Request("http://localhost/api/admin/cases/case-1/opinion", {
+			headers: { cookie: `admin_session=${adminToken}` },
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("cache-control"), "private, no-store");
+		assert.equal(requestedBy, "admin-1:case-1");
+		assert.equal((await response.json() as { data: { text: string } }).data.text, "Final Opinion.");
+
+		const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
+		const denied = await getAdminCaseOpinionRoute(new Request("http://localhost/api/admin/cases/case-1/opinion", {
+			headers: { cookie: `admin_session=${doctorToken}` },
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(denied.status, 403);
+	} finally {
+		casesService.getAdminOpinion = originalGetAdminOpinion;
 	}
 });
 

@@ -21,6 +21,12 @@ interface CaseDocumentRequest {
 	note: string;
 	createdAt: string;
 	fulfilledAt: string | null;
+	closedAt: string | null;
+}
+
+interface CaseOpinion {
+	text: string;
+	createdAt: string;
 }
 
 interface PatientCase {
@@ -33,6 +39,7 @@ interface PatientCase {
 	updatedAt: string;
 	documents: CaseDocument[];
 	documentRequests: CaseDocumentRequest[];
+	opinion: CaseOpinion | null;
 }
 
 function displayStatus(status: string): string {
@@ -178,7 +185,7 @@ export default function PatientCasesPage() {
 											<li key={documentRequest.id}>
 												<p>{documentRequest.note}</p>
 												<time dateTime={documentRequest.createdAt}>{displayDate(documentRequest.createdAt)}</time>
-												<strong>{documentRequest.fulfilledAt ? "Documents received" : "Response needed"}</strong>
+												<strong>{documentRequest.closedAt ? "Closed by Opinion" : documentRequest.fulfilledAt ? "Documents received" : "Response needed"}</strong>
 												{documentRequest.fulfilledAt && <span className="patient-case-fulfilled">Received {displayDate(documentRequest.fulfilledAt)}</span>}
 										</li>
 										))}</ol>
@@ -191,6 +198,14 @@ export default function PatientCasesPage() {
 										<ul>{caseRecord.documents.map((document) => (
 											<li key={document.id}><a href={`/api/cases/documents/${encodeURIComponent(document.id)}`}>{document.fileName}</a></li>
 										))}</ul>
+									</section>
+								)}
+
+								{caseRecord.opinion && (
+									<section className="patient-case-opinion" aria-label="Final Opinion">
+										<h3>Final Opinion</h3>
+										<p>{caseRecord.opinion.text}</p>
+										<time dateTime={caseRecord.opinion.createdAt}>{displayDate(caseRecord.opinion.createdAt)}</time>
 									</section>
 								)}
 

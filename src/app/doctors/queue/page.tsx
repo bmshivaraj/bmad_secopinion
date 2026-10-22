@@ -37,11 +37,18 @@ interface CaseDocumentRequest {
 	note: string;
 	createdAt: string;
 	fulfilledAt: string | null;
+	closedAt: string | null;
+}
+
+interface CaseOpinion {
+	text: string;
+	createdAt: string;
 }
 
 interface CaseDetail extends QueueCase {
 	documents: CaseDocument[];
 	documentRequests: CaseDocumentRequest[];
+	opinion: CaseOpinion | null;
 }
 
 function formatRemainingTime(milliseconds: number | null): string {
@@ -74,6 +81,10 @@ export default function DoctorQueuePage() {
 	const [requestError, setRequestError] = useState("");
 	const [requestNotice, setRequestNotice] = useState("");
 	const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
+	const [opinionText, setOpinionText] = useState("");
+	const [opinionError, setOpinionError] = useState("");
+	const [opinionNotice, setOpinionNotice] = useState("");
+	const [isSubmittingOpinion, setIsSubmittingOpinion] = useState(false);
 	const [busyClaimCaseId, setBusyClaimCaseId] = useState<string | null>(null);
 	const [refreshKey, setRefreshKey] = useState(0);
 
@@ -122,6 +133,9 @@ export default function DoctorQueuePage() {
 		setDetailError("");
 		setRequestError("");
 		setRequestNotice("");
+		setOpinionText("");
+		setOpinionError("");
+		setOpinionNotice("");
 		try {
 			const response = await fetch(`/api/doctors/queue/${encodeURIComponent(caseId)}`, { cache: "no-store" });
 			const result = await response.json() as ApiResult<CaseDetail>;
@@ -199,6 +213,38 @@ export default function DoctorQueuePage() {
 			setIsSubmittingRequest(false);
 		}
 	}
+
+	async function submitOpinion(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		if (!activeCase) return;
+		setIsSubmittingOpinion(true);
+		setOpinionError("");
+		setOpinionNotice("");
+		try {
+			const response = await fetch(`/api/cases/${encodeURIComponent(activeCase.id)}/opinion`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ opinion: opinionText }),
+			});
+			const result = await response.json() as ApiResult<CaseDetail>;
+			if (!response.ok || result.error || !result.data) {
+				setOpinionError(result.error?.message ?? "Unable to submit the Opinion.");
+				return;
+			}
+			setActiveCase(result.data);
+			setCases((current) => current.map((caseRecord) => caseRecord.id === result.data?.id
+				? { ...caseRecord, status: result.data.status, elapsedSlaMs: result.data.elapsedSlaMs, remainingSlaMs: result.data.remainingSlaMs }
+				: caseRecord));
+			setOpinionText("");
+			setOpinionNotice("Opinion submitted. The Case is closed.");
+		} catch {
+			setOpinionError("Unable to confirm whether the Opinion was submitted. Refresh the Case before retrying.");
+		} finally {
+			setIsSubmittingOpinion(false);
+		}
+	}
+
+	const opinionCharacterCount = Array.from(opinionText).length;
 
 	async function signOut() {
 		await fetch("/api/doctors/logout", { method: "POST" }).catch(() => undefined);
@@ -297,6 +343,9 @@ export default function DoctorQueuePage() {
 											setRequestNote("");
 											setRequestError("");
 											setRequestNotice("");
+											setOpinionText("");
+											setOpinionError("");
+											setOpinionNotice("");
 											setDetailError("");
 											setIsLoadingDetail(false);
 										}}>Close</button>
@@ -305,6 +354,8 @@ export default function DoctorQueuePage() {
 								<p className="doctor-detail-condition">{activeCase.condition}</p>
 								{requestError && <p className="admin-error" role="alert">{requestError}</p>}
 								{requestNotice && <p className="admin-notice" role="status">{requestNotice}</p>}
+								{opinionError && <p className="admin-error" role="alert">{opinionError}</p>}
+								{opinionNotice && <p className="admin-notice" role="status">{opinionNotice}</p>}
 								<dl className="doctor-detail-fields">
 									<div><dt>Patient-provided recommendation</dt><dd>{activeCase.recommendation}</dd></div>
 									{activeCase.additionalDetails && <div><dt>Additional details</dt><dd>{activeCase.additionalDetails}</dd></div>}
@@ -325,9 +376,16 @@ export default function DoctorQueuePage() {
 											<li key={documentRequest.id}>
 												<p>{documentRequest.note}</p>
 												<time dateTime={documentRequest.createdAt}>{new Date(documentRequest.createdAt).toLocaleString()}</time>
-												<strong>{documentRequest.fulfilledAt ? "Patient responded" : "Waiting for Patient"}</strong>
+												<strong>{documentRequest.closedAt ? "Closed by Opinion" : documentRequest.fulfilledAt ? "Patient responded" : "Waiting for Patient"}</strong>
 											</li>
 										))}</ol>
+									</section>
+								)}
+								{activeCase.opinion && (
+									<section className="doctor-case-opinion" aria-labelledby="doctor-case-opinion-heading">
+										<h3 id="doctor-case-opinion-heading">Final Opinion</h3>
+										<p>{activeCase.opinion.text}</p>
+										<time dateTime={activeCase.opinion.createdAt}>{new Date(activeCase.opinion.createdAt).toLocaleString()}</time>
 									</section>
 								)}
 								{activeCase.status === "UnderReview" && activeCase.doctorId !== null && (
@@ -344,6 +402,23 @@ export default function DoctorQueuePage() {
 										/>
 										<button className="case-button case-button-primary" type="submit" disabled={isSubmittingRequest || !requestNote.trim()}>
 											{isSubmittingRequest ? "Saving..." : "Request Documents"}
+										</button>
+									</form>
+								)}
+								{["UnderReview", "MoreInfoRequested"].includes(activeCase.status) && activeCase.doctorId !== null && (
+									<form className="doctor-opinion-form" onSubmit={(event) => void submitOpinion(event)}>
+										<label htmlFor="case-opinion-text">Final Opinion</label>
+										<textarea
+											id="case-opinion-text"
+											minLength={1}
+											value={opinionText}
+											onChange={(event) => setOpinionText(event.target.value)}
+											required
+											rows={8}
+										/>
+											<p className="doctor-opinion-count">{opinionCharacterCount.toLocaleString()} / 10,000 characters</p>
+										<button className="case-button case-button-primary" type="submit" disabled={isSubmittingOpinion || !opinionText.trim() || opinionCharacterCount > 10000}>
+											{isSubmittingOpinion ? "Submitting..." : "Submit Opinion and Close Case"}
 										</button>
 									</form>
 								)}

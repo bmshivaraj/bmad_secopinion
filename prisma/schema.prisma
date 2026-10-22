@@ -165,6 +165,7 @@ model Case {
   assignmentLockVersion Int          @default(0) @map("assignment_lock_version")
   documents             CaseDocument[]
   documentRequests      CaseDocumentRequest[]
+  opinion               CaseOpinion?
   createdAt             DateTime     @default(now()) @map("created_at")
   updatedAt             DateTime     @updatedAt @map("updated_at")
 
@@ -196,10 +197,23 @@ model CaseDocumentRequest {
   case                  Case      @relation(fields: [caseId], references: [id], onDelete: Cascade)
   createdAt             DateTime  @default(now()) @map("created_at")
   fulfilledAt           DateTime? @map("fulfilled_at")
+  closedAt              DateTime? @map("closed_at")
 
   @@index([caseId, createdAt])
   @@index([caseId, fulfilledAt])
   @@map("case_document_requests")
+}
+
+model CaseOpinion {
+  id        String   @id @default(uuid())
+  caseId    String   @unique @map("case_id")
+  doctorId  String   @map("doctor_id")
+  text      String   @db.VarChar(10000)
+  case      Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt, caseId])
+  @@map("case_opinions")
 }
 
 model PaymentAttempt {

@@ -1877,6 +1877,71 @@ a {
   resize: vertical;
 }
 
+.doctor-opinion-form {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.doctor-opinion-form label {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.doctor-opinion-form textarea {
+  width: 100%;
+  min-height: 180px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.doctor-opinion-count {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.doctor-case-opinion,
+.patient-case-opinion {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.doctor-case-opinion h3,
+.patient-case-opinion h3 {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.doctor-case-opinion p,
+.patient-case-opinion p {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.doctor-case-opinion time,
+.patient-case-opinion time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .patient-cases-content {
   width: min(100%, 960px);
   margin: 0 auto;

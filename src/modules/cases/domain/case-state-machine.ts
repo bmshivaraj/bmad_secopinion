@@ -15,7 +15,7 @@ export const CASE_STATUS_TRANSITIONS: Readonly<Record<CaseStatus, readonly CaseS
 	Draft: ["Submitted"],
 	Submitted: ["UnderReview", "RefundPending"],
 	UnderReview: ["MoreInfoRequested", "OpinionGiven", "RefundPending"],
-	MoreInfoRequested: ["UnderReview", "RefundPending"],
+	MoreInfoRequested: ["UnderReview", "OpinionGiven", "RefundPending"],
 	OpinionGiven: ["Closed"],
 	Closed: [],
 	RefundPending: ["Refunded", "UnderReview"],

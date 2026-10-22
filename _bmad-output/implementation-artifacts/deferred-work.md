@@ -119,3 +119,9 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-4-3-request-additional-documents.md`
   summary: Apply the Case Document request migration and verify the partial unique index plus concurrent request/response rollback behavior against PostgreSQL.
   evidence: `npx prisma migrate status` and database-backed verification fail with PostgreSQL `P1000`; service and mocked repository transaction tests pass.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-4-submit-opinion-and-close-case.md`
+  summary: Apply the Opinion/closed-request migration and verify the partial index, payout cursor query, and concurrent Opinion transaction against PostgreSQL.
+  evidence: `npx prisma migrate status` fails with PostgreSQL `P1000`; schema, service, route, and mocked transaction checks pass, but production database behavior remains unverified.
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-4-submit-opinion-and-close-case.md`
+  summary: Add page-level tests for Doctor Opinion submission and Patient/Admin Opinion rendering when a UI test harness is available.
+  evidence: The repository has no page/browser test harness; route and service tests do not mount or interact with the Doctor, Patient, or Admin Opinion surfaces.

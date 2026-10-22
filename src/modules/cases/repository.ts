@@ -1,13 +1,16 @@
 // Cases module's own DB access (AD-2) -- no other module may query these tables directly.
 import { prisma } from "../../shared/prisma-client";
 import type { Prisma } from "../../generated/prisma/client";
+import { canTransitionCase } from "./domain";
 import { CaseDocumentRequestConflictError } from "./domain";
-import type { CaseDocumentRecord, CaseDocumentRequestRecord, CaseDraftInput, CaseRecord, CaseStatus } from "./domain";
+import { CaseOpinionConflictError } from "./domain";
+import type { CaseDocumentRecord, CaseDocumentRequestRecord, CaseDraftInput, CaseOpinionRecord, CaseRecord, CaseStatus, OpinionPayoutCursor } from "./domain";
 
 const draftInclude = { documents: { orderBy: { createdAt: "asc" as const } } } as const;
 const caseHistoryInclude = {
 	documents: { orderBy: { createdAt: "asc" as const } },
 	documentRequests: { orderBy: { createdAt: "asc" as const } },
+	opinion: true,
 } as const;
 
 function resumeOpenPauseHistory(value: Prisma.JsonValue, resumedAt: Date): Prisma.InputJsonValue | null {
@@ -21,6 +24,21 @@ function resumeOpenPauseHistory(value: Prisma.JsonValue, resumedAt: Date): Prism
 	const [openIndex] = openIntervals;
 	return value.map((entry, index) => index === openIndex && typeof entry === "object" && entry !== null && !Array.isArray(entry)
 		? { ...entry, resumedAt: resumedAt.toISOString() }
+		: entry) as Prisma.InputJsonValue;
+}
+
+function closeOpenPauseHistory(value: Prisma.JsonValue, closedAt: Date, requireOpenPause: boolean): Prisma.InputJsonValue | null {
+	if (!Array.isArray(value)) return null;
+	const openIntervals = value.flatMap((entry, index) => (
+		typeof entry === "object" && entry !== null && !Array.isArray(entry) && entry.resumedAt === null
+			? [index]
+			: []
+	));
+	if (openIntervals.length > 1 || (requireOpenPause && openIntervals.length !== 1)) return null;
+	if (openIntervals.length === 0) return value as Prisma.InputJsonValue;
+	const [openIndex] = openIntervals;
+	return value.map((entry, index) => index === openIndex && typeof entry === "object" && entry !== null && !Array.isArray(entry)
+		? { ...entry, resumedAt: closedAt.toISOString() }
 		: entry) as Prisma.InputJsonValue;
 }
 
@@ -89,6 +107,82 @@ export const casesRepository = {
 			orderBy: { updatedAt: "desc" },
 			include: caseHistoryInclude,
 		});
+	},
+
+	async submitOpinion(
+		caseId: string,
+		doctorId: string,
+		text: string,
+		submittedAt: Date,
+	): Promise<CaseOpinionRecord | null> {
+		return prisma.$transaction(async (transaction) => {
+			const current = await transaction.case.findFirst({
+				where: { id: caseId, doctorId, status: { in: ["UnderReview", "MoreInfoRequested"] } },
+				select: { status: true, slaPauseHistory: true },
+			});
+			if (!current || !canTransitionCase(current.status, "OpinionGiven") || !canTransitionCase("OpinionGiven", "Closed")) return null;
+			const slaPauseHistory = closeOpenPauseHistory(
+				current.slaPauseHistory,
+				submittedAt,
+				current.status === "MoreInfoRequested",
+			);
+			if (!slaPauseHistory) return null;
+			const activeRequest = await transaction.caseDocumentRequest.findFirst({
+				where: { caseId, fulfilledAt: null, closedAt: null },
+				orderBy: { createdAt: "desc" },
+				select: { id: true },
+			});
+			if (current.status === "MoreInfoRequested" && !activeRequest) return null;
+			const movedToOpinion = await transaction.case.updateMany({
+				where: { id: caseId, doctorId, status: current.status },
+				data: { status: "OpinionGiven", slaPauseHistory },
+			});
+			if (movedToOpinion.count !== 1) return null;
+			const opinion = await transaction.caseOpinion.create({
+				data: { caseId, doctorId, text, createdAt: submittedAt },
+			});
+			if (activeRequest) {
+				const closedRequest = await transaction.caseDocumentRequest.updateMany({
+					where: { id: activeRequest.id, fulfilledAt: null, closedAt: null },
+					data: { closedAt: submittedAt },
+				});
+				if (closedRequest.count !== 1) throw new CaseOpinionConflictError();
+			}
+			const closed = await transaction.case.updateMany({
+				where: { id: caseId, doctorId, status: "OpinionGiven" },
+				data: { status: "Closed" },
+			});
+			if (closed.count !== 1) throw new CaseOpinionConflictError();
+			return opinion;
+		});
+	},
+
+	async listClosedOpinionsForPayout(after: OpinionPayoutCursor | null) {
+		return prisma.case.findMany({
+			where: {
+				status: "Closed",
+				doctorId: { not: null },
+				chargedAmount: { not: null },
+				opinion: after
+					? { is: { OR: [
+						{ createdAt: { gt: after.opinionCreatedAt } },
+						{ createdAt: after.opinionCreatedAt, caseId: { gt: after.caseId } },
+					] } }
+					: { isNot: null },
+			},
+			orderBy: [{ opinion: { createdAt: "asc" } }, { id: "asc" }],
+			take: 100,
+			select: {
+				id: true,
+				doctorId: true,
+				chargedAmount: true,
+				opinion: { select: { createdAt: true } },
+			},
+		});
+	},
+
+	async findOpinionByCaseId(caseId: string): Promise<CaseOpinionRecord | null> {
+		return prisma.caseOpinion.findUnique({ where: { caseId } });
 	},
 
 	async listUnclassifiedSubmittedCases(): Promise<CaseRecord[]> {
@@ -180,9 +274,14 @@ export const casesRepository = {
 			where: {
 				id: caseId,
 				specialtyId: { in: specialtyIds },
-				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
 				submittedAt: { not: null },
-				OR: [{ doctorId: null }, { doctorId }],
+				OR: [
+					{ status: "Closed", doctorId },
+					{
+						status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+						OR: [{ doctorId: null }, { doctorId }],
+					},
+				],
 			},
 			include: caseHistoryInclude,
 		});
@@ -242,7 +341,7 @@ export const casesRepository = {
 			if (!current) return null;
 			const slaPauseHistory = resumeOpenPauseHistory(current.slaPauseHistory, resumedAt);
 			const activeRequest = await transaction.caseDocumentRequest.findFirst({
-				where: { caseId, fulfilledAt: null },
+				where: { caseId, fulfilledAt: null, closedAt: null },
 				orderBy: { createdAt: "desc" },
 				select: { id: true },
 			});
@@ -253,7 +352,7 @@ export const casesRepository = {
 			});
 			if (updated.count !== 1) return null;
 			const fulfilled = await transaction.caseDocumentRequest.updateMany({
-				where: { id: activeRequest.id, fulfilledAt: null },
+				where: { id: activeRequest.id, fulfilledAt: null, closedAt: null },
 				data: { fulfilledAt: resumedAt },
 			});
 			if (fulfilled.count !== 1) throw new CaseDocumentRequestConflictError();

@@ -4,7 +4,7 @@ import test from "node:test";
 import { Prisma } from "../../generated/prisma/client";
 import type { AuthContext } from "../../shared/auth-context";
 import type { StorageProvider } from "../../shared/storage-provider";
-import type { CaseDocumentRecord, CaseDocumentRequestRecord, CaseDocumentUpload, CaseDraftInput, CaseRecord } from "./domain";
+import type { CaseDocumentRecord, CaseDocumentRequestRecord, CaseDocumentUpload, CaseDraftInput, CaseOpinionRecord, CaseRecord, OpinionPayoutCursor } from "./domain";
 import type { PaymentAttempt } from "../payments/domain";
 
 process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopinion_test";
@@ -49,6 +49,7 @@ function createFixture(options: {
 		const requestCases = new Map<string, string>();
 	const documents = new Map<string, CaseDocumentRecord>();
 	const documentRequests = new Map<string, CaseDocumentRequestRecord[]>();
+	const opinions = new Map<string, CaseOpinionRecord>();
 	const files = new Map<string, Uint8Array>();
 	let saveCalls = 0;
 	let readCalls = 0;
@@ -113,10 +114,13 @@ function createFixture(options: {
 		async findById(caseId: string): Promise<CaseRecord | null> {
 			return cases.get(caseId) ?? null;
 		},
+		async findOpinionByCaseId(caseId: string): Promise<CaseOpinionRecord | null> {
+			return opinions.get(caseId) ?? null;
+		},
 		async listPatientCases(patientId: string) {
 			return [...cases.values()]
 				.filter((record) => record.patientId === patientId && record.status !== "Draft")
-				.map((record) => ({ ...record, documentRequests: documentRequests.get(record.id) ?? [] }));
+				.map((record) => ({ ...record, documentRequests: documentRequests.get(record.id) ?? [], opinion: opinions.get(record.id) ?? null }));
 		},
 		async listUnclassifiedSubmittedCases(): Promise<CaseRecord[]> {
 			return [...cases.values()].filter((record) => record.status === "Submitted" && record.specialtyId === null);
@@ -168,17 +172,51 @@ function createFixture(options: {
 		async findDoctorVisibleCase(caseId: string, specialtyIds: string[], doctorId: string): Promise<CaseRecord | null> {
 			const record = cases.get(caseId);
 			return record && specialtyIds.includes(record.specialtyId ?? "")
-				&& ["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)
+				&& ["Submitted", "UnderReview", "MoreInfoRequested", "Closed"].includes(record.status)
 				&& record.submittedAt !== null
 				&& (record.doctorId === null || record.doctorId === doctorId)
-				? { ...record, documentRequests: documentRequests.get(record.id) ?? [] }
+				? { ...record, documentRequests: documentRequests.get(record.id) ?? [], opinion: opinions.get(record.id) ?? null }
 				: null;
+		},
+		async submitOpinion(caseId: string, doctorId: string, text: string, submittedAt: Date): Promise<CaseOpinionRecord | null> {
+			const record = cases.get(caseId);
+			if (!record || record.doctorId !== doctorId || !["UnderReview", "MoreInfoRequested"].includes(record.status)) return null;
+			const history = Array.isArray(record.slaPauseHistory) ? [...record.slaPauseHistory] : [];
+			const openIndex = history.findLastIndex((interval) => typeof interval === "object" && interval !== null && !Array.isArray(interval) && interval.resumedAt === null);
+			if (record.status === "MoreInfoRequested" && openIndex < 0) return null;
+			if (openIndex >= 0) {
+				const openInterval = history[openIndex];
+				if (typeof openInterval !== "object" || openInterval === null || Array.isArray(openInterval)) return null;
+				history[openIndex] = { ...openInterval, resumedAt: submittedAt.toISOString() };
+			}
+			const requestHistory = documentRequests.get(caseId) ?? [];
+			const activeRequestIndex = requestHistory.findLastIndex(({ fulfilledAt, closedAt }) => fulfilledAt === null && closedAt === null);
+			if (record.status === "MoreInfoRequested" && activeRequestIndex < 0) return null;
+			const opinion: CaseOpinionRecord = { id: randomUUID(), caseId, doctorId, text, createdAt: submittedAt };
+			opinions.set(caseId, opinion);
+			if (activeRequestIndex >= 0) {
+				const nextRequests = [...requestHistory];
+				nextRequests[activeRequestIndex] = { ...nextRequests[activeRequestIndex], closedAt: submittedAt };
+				documentRequests.set(caseId, nextRequests);
+			}
+			cases.set(caseId, { ...record, status: "Closed", slaPauseHistory: history, updatedAt: submittedAt });
+			return opinion;
+		},
+		async listClosedOpinionsForPayout(after: OpinionPayoutCursor | null) {
+			return [...opinions.values()].flatMap((opinion) => {
+				const record = cases.get(opinion.caseId);
+				const isAfter = !after || opinion.createdAt > after.opinionCreatedAt
+					|| (opinion.createdAt.getTime() === after.opinionCreatedAt.getTime() && opinion.caseId > after.caseId);
+				return isAfter && record?.status === "Closed" && record.doctorId && record.chargedAmount
+					? [{ id: record.id, doctorId: record.doctorId, chargedAmount: record.chargedAmount, opinion: { createdAt: opinion.createdAt } }]
+					: [];
+			}).sort((left, right) => left.opinion.createdAt.getTime() - right.opinion.createdAt.getTime() || left.id.localeCompare(right.id)).slice(0, 100);
 		},
 		async createDocumentRequest(caseId: string, doctorId: string, note: string, requestedAt: Date): Promise<CaseDocumentRequestRecord | null> {
 			const record = cases.get(caseId);
 			if (!record || record.status !== "UnderReview" || record.doctorId !== doctorId) return null;
 			const request: CaseDocumentRequestRecord = {
-				id: randomUUID(), caseId, requestedByDoctorId: doctorId, note, createdAt: requestedAt, fulfilledAt: null,
+				id: randomUUID(), caseId, requestedByDoctorId: doctorId, note, createdAt: requestedAt, fulfilledAt: null, closedAt: null,
 			};
 			const history = Array.isArray(record.slaPauseHistory) ? record.slaPauseHistory : [];
 			cases.set(caseId, {
@@ -350,6 +388,7 @@ function createFixture(options: {
 		cases,
 		documents,
 		documentRequests,
+		opinions,
 		files,
 		deleteCalls,
 		get saveCalls() { return saveCalls; },
@@ -385,6 +424,74 @@ async function createAssignedCase(fixture: ReturnType<typeof createFixture>) {
 	await fixture.service.assignCaseToDoctor(VERIFIED_DOCTOR, submitted.id, undefined, classified.assignmentLockVersion);
 	return fixture.cases.get(submitted.id)!;
 }
+
+test("assigned Doctor submits one final Opinion, closes the Case, and exposes payout eligibility", async () => {
+	const fixture = createFixture();
+	const record = await createAssignedCase(fixture);
+	const submittedAt = record.submittedAt;
+	const opinion = await fixture.service.submitOpinion(VERIFIED_DOCTOR, record.id, "  Conservative treatment is appropriate.  ");
+
+	assert.deepEqual(opinion, { text: "Conservative treatment is appropriate.", createdAt: opinion.createdAt });
+	assert.equal(fixture.cases.get(record.id)?.status, "Closed");
+	assert.equal(fixture.cases.get(record.id)?.submittedAt, submittedAt);
+	const doctorDetail = await fixture.service.getDoctorCase(VERIFIED_DOCTOR, record.id);
+	assert.equal(doctorDetail.opinion?.text, opinion.text);
+	assert.equal(doctorDetail.elapsedSlaMs, computeElapsedSlaTime({ submittedAt, slaPauseHistory: fixture.cases.get(record.id)!.slaPauseHistory }, new Date(opinion.createdAt)));
+	assert.equal((await fixture.service.listPatientCases(PATIENT))[0].opinion?.text, opinion.text);
+	assert.deepEqual(await fixture.service.listClosedOpinionsForPayout(null), {
+		items: [{
+			caseId: record.id,
+			doctorId: VERIFIED_DOCTOR.userId,
+			chargedAmount: "1000.00",
+			opinionCreatedAt: opinion.createdAt,
+		}],
+		nextCursor: null,
+	});
+	await assert.rejects(fixture.service.submitOpinion(VERIFIED_DOCTOR, record.id, "A second Opinion."), { code: "CASE_OPINION_CONFLICT" });
+});
+
+test("Opinion from MoreInfoRequested closes its pause and request without claiming upload fulfillment", async () => {
+	const fixture = createFixture();
+	const record = await createAssignedCase(fixture);
+	const submittedAt = record.submittedAt;
+	await fixture.service.requestDocuments(VERIFIED_DOCTOR, record.id, "Please attach a recent scan.");
+	const opinion = await fixture.service.submitOpinion(VERIFIED_DOCTOR, record.id, "The existing reports are sufficient.");
+	const closed = fixture.cases.get(record.id)!;
+	const request = fixture.documentRequests.get(record.id)?.[0];
+
+	assert.equal(closed.status, "Closed");
+	assert.equal(closed.submittedAt, submittedAt);
+	assert.equal((closed.slaPauseHistory as { resumedAt: string | null }[])[0].resumedAt, opinion.createdAt);
+	assert.equal(request?.fulfilledAt, null);
+	assert.equal(request?.closedAt?.toISOString(), opinion.createdAt);
+	assert.equal((await fixture.service.listPatientCases(PATIENT))[0].documentRequests[0].closedAt, opinion.createdAt);
+});
+
+test("Admin can read a final Opinion while other non-owner roles are denied", async () => {
+	const fixture = createFixture();
+	const record = await createAssignedCase(fixture);
+	await fixture.service.submitOpinion(VERIFIED_DOCTOR, record.id, "Final Opinion.");
+	assert.equal((await fixture.service.getAdminOpinion(ADMIN, record.id)).text, "Final Opinion.");
+	await assert.rejects(fixture.service.getAdminOpinion(VERIFIED_DOCTOR, record.id), { code: "CASE_ADMIN_ACCESS_DENIED" });
+});
+
+test("Opinion submission rejects invalid text, wrong/unverified Doctors, and RefundPending", async () => {
+	const fixture = createFixture({ includeAdditionalDoctors: true });
+	const record = await createAssignedCase(fixture);
+	await assert.rejects(fixture.service.submitOpinion(VERIFIED_DOCTOR, record.id, "  "), { code: "VALIDATION_ERROR" });
+	await assert.rejects(fixture.service.submitOpinion(VERIFIED_DOCTOR, record.id, "x".repeat(10001)), { code: "VALIDATION_ERROR" });
+	await assert.rejects(fixture.service.submitOpinion({ userId: "doctor-verified-b", role: "doctor" }, record.id, "Valid Opinion."), { code: "CASE_NOT_FOUND" });
+	await assert.rejects(fixture.service.submitOpinion({ userId: "doctor-pending", role: "doctor" }, record.id, "Valid Opinion."), { code: "CASE_DOCTOR_ACCESS_DENIED" });
+
+	fixture.cases.set(record.id, { ...record, status: "RefundPending" });
+	await assert.rejects(fixture.service.submitOpinion(VERIFIED_DOCTOR, record.id, "Valid Opinion."), { code: "CASE_OPINION_CONFLICT" });
+	assert.equal(fixture.opinions.has(record.id), false);
+
+	const unicodeFixture = createFixture();
+	const unicodeRecord = await createAssignedCase(unicodeFixture);
+	const emojiOpinion = String.fromCodePoint(0x1f600).repeat(10000);
+	assert.equal(Array.from((await unicodeFixture.service.submitOpinion(VERIFIED_DOCTOR, unicodeRecord.id, emojiOpinion)).text).length, 10000);
+});
 
 test("Doctor request persists a trimmed note and open SLA pause for Patient and Doctor views", async () => {
 	const fixture = createFixture();
@@ -1065,13 +1172,19 @@ test("queue repository enforces active statuses, Specialty membership, and assig
 			where: {
 				id: "case-a",
 				specialtyId: { in: ["specialty-a"] },
-				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
 				submittedAt: { not: null },
-				OR: [{ doctorId: null }, { doctorId: "doctor-a" }],
+				OR: [
+					{ status: "Closed", doctorId: "doctor-a" },
+					{
+						status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+						OR: [{ doctorId: null }, { doctorId: "doctor-a" }],
+					},
+				],
 			},
 			include: {
 				documents: { orderBy: { createdAt: "asc" } },
 				documentRequests: { orderBy: { createdAt: "asc" } },
+				opinion: true,
 			},
 		});
 	} finally {
@@ -1168,6 +1281,7 @@ test("Patient Case list repository scopes by owner and omits Draft Cases", async
 			include: {
 				documents: { orderBy: { createdAt: "asc" } },
 				documentRequests: { orderBy: { createdAt: "asc" } },
+				opinion: true,
 			},
 		});
 	} finally {
@@ -1213,7 +1327,7 @@ test("request and response repositories conditionally transition Case status wit
 		caseDocumentRequest: {
 			async create(args) {
 				requestCreates.push(args);
-				return { id: "request-1", caseId: "case-1", requestedByDoctorId: "doctor-1", note: "Attach a scan.", createdAt: requestedAt, fulfilledAt: null };
+				return { id: "request-1", caseId: "case-1", requestedByDoctorId: "doctor-1", note: "Attach a scan.", createdAt: requestedAt, fulfilledAt: null, closedAt: null };
 			},
 			async findFirst() { return { id: "request-1" }; },
 			async updateMany(args) { requestUpdates.push(args); return { count: 1 }; },
@@ -1252,7 +1366,7 @@ test("request and response repositories conditionally transition Case status wit
 			{ pausedAt: requestedAt.toISOString(), resumedAt: resumedAt.toISOString() },
 		]);
 		assert.deepEqual(requestUpdates[0], {
-			where: { id: "request-1", fulfilledAt: null },
+			where: { id: "request-1", fulfilledAt: null, closedAt: null },
 			data: { fulfilledAt: resumedAt },
 		});
 		assert.equal(documentCreates.length, 1);
@@ -1331,6 +1445,179 @@ test("response repository transaction rolls back Case, request, and Document wri
 			slaPauseHistory: [{ pausedAt: "2026-10-22T12:00:00.000Z", resumedAt: null }],
 			fulfilledAt: null,
 			documentIds: [],
+		});
+	} finally {
+		prismaClient.$transaction = originalTransaction;
+	}
+});
+
+test("Opinion repository closes MoreInfoRequested through OpinionGiven and closes request without fulfillment", async () => {
+	type TransactionMock = {
+		case: {
+			findFirst: (args: unknown) => Promise<{ status: "MoreInfoRequested"; slaPauseHistory: Prisma.JsonValue } | null>;
+			updateMany: (args: unknown) => Promise<{ count: number }>;
+		};
+		caseOpinion: { create: (args: unknown) => Promise<CaseOpinionRecord> };
+		caseDocumentRequest: {
+			findFirst: (args: unknown) => Promise<{ id: string } | null>;
+			updateMany: (args: unknown) => Promise<{ count: number }>;
+		};
+	};
+	const prismaClient = prisma as unknown as {
+		$transaction: (callback: (transaction: TransactionMock) => Promise<unknown>) => Promise<unknown>;
+	};
+	const originalTransaction = prismaClient.$transaction;
+	const submittedAt = new Date("2026-10-22T14:00:00.000Z");
+	const transitions: unknown[] = [];
+	let requestUpdate: unknown;
+	let opinionCreate: unknown;
+	const transaction: TransactionMock = {
+		case: {
+			async findFirst() {
+				return {
+					status: "MoreInfoRequested",
+					slaPauseHistory: [{ pausedAt: "2026-10-22T12:00:00.000Z", resumedAt: null }],
+				};
+			},
+			async updateMany(args) { transitions.push(args); return { count: 1 }; },
+		},
+		caseOpinion: {
+			async create(args) {
+				opinionCreate = args;
+				return { id: "opinion-1", caseId: "case-1", doctorId: "doctor-1", text: "Final opinion.", createdAt: submittedAt };
+			},
+		},
+		caseDocumentRequest: {
+			async findFirst() { return { id: "request-1" }; },
+			async updateMany(args) { requestUpdate = args; return { count: 1 }; },
+		},
+	};
+	prismaClient.$transaction = async (callback) => callback(transaction);
+	try {
+		const opinion = await casesRepository.submitOpinion("case-1", "doctor-1", "Final opinion.", submittedAt);
+		assert.equal(opinion?.id, "opinion-1");
+		assert.deepEqual(transitions, [
+			{
+				where: { id: "case-1", doctorId: "doctor-1", status: "MoreInfoRequested" },
+				data: {
+					status: "OpinionGiven",
+					slaPauseHistory: [{ pausedAt: "2026-10-22T12:00:00.000Z", resumedAt: submittedAt.toISOString() }],
+				},
+			},
+			{
+				where: { id: "case-1", doctorId: "doctor-1", status: "OpinionGiven" },
+				data: { status: "Closed" },
+			},
+		]);
+		assert.deepEqual(opinionCreate, { data: { caseId: "case-1", doctorId: "doctor-1", text: "Final opinion.", createdAt: submittedAt } });
+		assert.deepEqual(requestUpdate, {
+			where: { id: "request-1", fulfilledAt: null, closedAt: null },
+			data: { closedAt: submittedAt },
+		});
+	} finally {
+		prismaClient.$transaction = originalTransaction;
+	}
+});
+
+test("payout eligibility repository uses a stable composite cursor and bounded page size", async () => {
+	const caseDelegate = prisma.case as unknown as { findMany: (args: unknown) => Promise<unknown[]> };
+	const originalFindMany = caseDelegate.findMany;
+	const after = { caseId: "case-cursor", opinionCreatedAt: new Date("2026-10-22T00:00:00.000Z") };
+	let query: unknown;
+	caseDelegate.findMany = async (args) => { query = args; return []; };
+	try {
+		assert.deepEqual(await casesRepository.listClosedOpinionsForPayout(after), []);
+		assert.deepEqual(query, {
+			where: {
+				status: "Closed",
+				doctorId: { not: null },
+				chargedAmount: { not: null },
+				opinion: { is: { OR: [
+					{ createdAt: { gt: after.opinionCreatedAt } },
+					{ createdAt: after.opinionCreatedAt, caseId: { gt: after.caseId } },
+				] } },
+			},
+			orderBy: [{ opinion: { createdAt: "asc" } }, { id: "asc" }],
+			take: 100,
+			select: {
+				id: true,
+				doctorId: true,
+				chargedAmount: true,
+				opinion: { select: { createdAt: true } },
+			},
+		});
+	} finally {
+		caseDelegate.findMany = originalFindMany;
+	}
+});
+
+test("Opinion repository transaction rolls back Opinion, request close, and SLA changes when Case closure loses a race", async () => {
+	type TransactionMock = {
+		case: {
+			findFirst: (args: unknown) => Promise<{ status: "MoreInfoRequested"; slaPauseHistory: Prisma.JsonValue } | null>;
+			updateMany: (args: unknown) => Promise<{ count: number }>;
+		};
+		caseOpinion: { create: (args: unknown) => Promise<CaseOpinionRecord> };
+		caseDocumentRequest: {
+			findFirst: (args: unknown) => Promise<{ id: string } | null>;
+			updateMany: (args: unknown) => Promise<{ count: number }>;
+		};
+	};
+	const prismaClient = prisma as unknown as {
+		$transaction: (callback: (transaction: TransactionMock) => Promise<unknown>) => Promise<unknown>;
+	};
+	const originalTransaction = prismaClient.$transaction;
+	const submittedAt = new Date("2026-10-22T14:00:00.000Z");
+	const initialPauseHistory = [{ pausedAt: "2026-10-22T12:00:00.000Z", resumedAt: null }];
+	const state = {
+		status: "MoreInfoRequested",
+		slaPauseHistory: initialPauseHistory as Prisma.JsonValue,
+		requestClosedAt: null as Date | null,
+		opinionPersisted: false,
+	};
+	let caseUpdateCount = 0;
+	const transaction: TransactionMock = {
+		case: {
+			async findFirst() { return { status: "MoreInfoRequested", slaPauseHistory: state.slaPauseHistory }; },
+			async updateMany(args) {
+				caseUpdateCount += 1;
+				if (caseUpdateCount === 2) return { count: 0 };
+				const data = (args as { data: { status: string; slaPauseHistory?: Prisma.JsonValue } }).data;
+				state.status = data.status;
+				if (data.slaPauseHistory) state.slaPauseHistory = data.slaPauseHistory;
+				return { count: 1 };
+			},
+		},
+		caseOpinion: {
+			async create() {
+				state.opinionPersisted = true;
+				return { id: "opinion-1", caseId: "case-1", doctorId: "doctor-1", text: "Final opinion.", createdAt: submittedAt };
+			},
+		},
+		caseDocumentRequest: {
+			async findFirst() { return { id: "request-1" }; },
+			async updateMany(args) {
+				state.requestClosedAt = (args as { data: { closedAt: Date } }).data.closedAt;
+				return { count: 1 };
+			},
+		},
+	};
+	prismaClient.$transaction = async (callback) => {
+		const snapshot = structuredClone(state);
+		try {
+			return await callback(transaction);
+		} catch (error) {
+			Object.assign(state, snapshot);
+			throw error;
+		}
+	};
+	try {
+		await assert.rejects(casesRepository.submitOpinion("case-1", "doctor-1", "Final opinion.", submittedAt), { code: "CASE_OPINION_CONFLICT" });
+		assert.deepEqual(state, {
+			status: "MoreInfoRequested",
+			slaPauseHistory: initialPauseHistory,
+			requestClosedAt: null,
+			opinionPersisted: false,
 		});
 	} finally {
 		prismaClient.$transaction = originalTransaction;

@@ -21,6 +21,7 @@ import {
 	CaseDoctorSelectionConflictError,
 	CaseDocumentNotFoundError,
 	CaseDocumentRequestConflictError,
+	CaseOpinionConflictError,
 	CaseDocumentRequiredError,
 	CaseNotFoundError,
 	CaseSessionUnauthorizedError,
@@ -29,6 +30,8 @@ import {
 	InvalidCaseInputError,
 	type CaseDocumentRecord,
 	type CaseDocumentRequestRecord,
+	type CaseOpinionRecord,
+	type OpinionPayoutCursor,
 	type CaseDocumentUpload,
 	type CaseDraftInput,
 	type CaseRecord,
@@ -47,6 +50,7 @@ type CasesRepository = Pick<
 	| "updateCaseToSubmitted" | "findById" | "listUnclassifiedSubmittedCases" | "listDoctorQueue"
 	| "listAdminAssignmentCases" | "assignCaseToDoctor" | "classifySubmittedCase" | "findDoctorVisibleCase"
 	| "listPatientCases" | "createDocumentRequest" | "createDocuments" | "createResponseDocuments" | "findDocumentById" | "deleteDocument"
+	| "submitOpinion" | "listClosedOpinionsForPayout" | "findOpinionByCaseId"
 >;
 
 type DoctorsService = Pick<
@@ -158,6 +162,14 @@ function publicDocumentRequest(request: CaseDocumentRequestRecord) {
 		note: request.note,
 		createdAt: request.createdAt.toISOString(),
 		fulfilledAt: request.fulfilledAt?.toISOString() ?? null,
+		closedAt: request.closedAt?.toISOString() ?? null,
+	};
+}
+
+function publicOpinion(opinion: CaseOpinionRecord) {
+	return {
+		text: opinion.text,
+		createdAt: opinion.createdAt.toISOString(),
 	};
 }
 
@@ -672,9 +684,61 @@ export function createCasesService(
 			const record = await repository.findDoctorVisibleCase(caseId, specialtyIds, caller.userId);
 			if (!record) throw new CaseNotFoundError();
 			return {
-				...doctorCaseSummary(record, new Date()),
+				...doctorCaseSummary(record, record.status === "Closed" && record.opinion ? record.opinion.createdAt : new Date()),
 				documents: record.doctorId === caller.userId ? record.documents.map(publicDocument) : [],
 				documentRequests: (record.documentRequests ?? []).map(publicDocumentRequest),
+				opinion: record.opinion ? publicOpinion(record.opinion) : null,
+			};
+		},
+
+		async submitOpinion(caller: AuthContext, caseId: string, text: unknown) {
+			assertDoctor(caller);
+			const specialtyIds = await doctors.getVerifiedDoctorSpecialtyIds(caller.userId);
+			if (!specialtyIds) throw new CaseDoctorAccessDeniedError();
+			if (typeof text !== "string") throw new InvalidCaseInputError("opinion must be text.");
+			const normalizedText = text.trim();
+			if (!normalizedText || Array.from(normalizedText).length > 10000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(normalizedText)) {
+				throw new InvalidCaseInputError("opinion must be 1-10000 characters without control characters.");
+			}
+			const record = await repository.findById(caseId);
+			if (!record) throw new CaseNotFoundError();
+			if (record.doctorId !== caller.userId || !record.specialtyId || !specialtyIds.includes(record.specialtyId)) {
+				throw new CaseNotFoundError();
+			}
+			if (record.status !== "UnderReview" && record.status !== "MoreInfoRequested") {
+				throw new CaseOpinionConflictError();
+			}
+			const opinion = await repository.submitOpinion(caseId, caller.userId, normalizedText, new Date());
+			if (!opinion) throw new CaseOpinionConflictError();
+			return publicOpinion(opinion);
+		},
+
+		async getAdminOpinion(caller: AuthContext, caseId: string) {
+			assertAdmin(caller);
+			const opinion = await repository.findOpinionByCaseId(caseId);
+			if (!opinion) throw new CaseNotFoundError();
+			return publicOpinion(opinion);
+		},
+
+		async listClosedOpinionsForPayout(after: OpinionPayoutCursor | null) {
+			if (after !== null && (!(after.opinionCreatedAt instanceof Date)
+				|| !Number.isFinite(after.opinionCreatedAt.getTime())
+				|| typeof after.caseId !== "string" || !after.caseId)) {
+				throw new InvalidCaseInputError("after must be a valid Opinion cursor or null.");
+			}
+			const records = await repository.listClosedOpinionsForPayout(after);
+			const items = records.flatMap((record) => record.doctorId && record.chargedAmount && record.opinion ? [{
+				caseId: record.id,
+				doctorId: record.doctorId,
+				chargedAmount: record.chargedAmount.toFixed(2),
+				opinionCreatedAt: record.opinion.createdAt.toISOString(),
+			}] : []);
+			const lastRecord = records.at(-1);
+			return {
+				items,
+				nextCursor: records.length === 100 && lastRecord?.opinion
+					? { caseId: lastRecord.id, opinionCreatedAt: lastRecord.opinion.createdAt.toISOString() }
+					: null,
 			};
 		},
 
@@ -712,6 +776,7 @@ export function createCasesService(
 				updatedAt: record.updatedAt.toISOString(),
 				documents: record.documents.map(publicDocument),
 				documentRequests: (record.documentRequests ?? []).map(publicDocumentRequest),
+				opinion: record.opinion ? publicOpinion(record.opinion) : null,
 			}));
 		},
 	};

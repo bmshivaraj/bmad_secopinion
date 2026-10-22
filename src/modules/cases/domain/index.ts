@@ -22,6 +22,20 @@ export interface CaseDocumentRequestRecord {
 	note: string;
 	createdAt: Date;
 	fulfilledAt: Date | null;
+	closedAt: Date | null;
+}
+
+export interface CaseOpinionRecord {
+	id: string;
+	caseId: string;
+	doctorId: string;
+	text: string;
+	createdAt: Date;
+}
+
+export interface OpinionPayoutCursor {
+	caseId: string;
+	opinionCreatedAt: Date;
 }
 
 export interface CaseRecord {
@@ -44,6 +58,7 @@ export interface CaseRecord {
 	updatedAt: Date;
 	documents: CaseDocumentRecord[];
 	documentRequests?: CaseDocumentRequestRecord[];
+	opinion?: CaseOpinionRecord | null;
 }
 
 export interface CaseDraftInput {
@@ -176,6 +191,14 @@ export class CaseDocumentRequestConflictError extends DomainError {
 
 	constructor() {
 		super("This Case is no longer accepting a Document request or response.");
+	}
+}
+
+export class CaseOpinionConflictError extends DomainError {
+	readonly code = "CASE_OPINION_CONFLICT";
+
+	constructor() {
+		super("This Case is no longer eligible for an Opinion.");
 	}
 }
 

@@ -20,6 +20,7 @@ import {
 } from "../domain";
 
 const MAX_MULTIPART_SIZE = 50 * 1024 * 1024;
+const MAX_OPINION_REQUEST_SIZE = 64 * 1024;
 
 function createBoundedMultipartBody(request: Request): ReadableStream<Uint8Array> {
 	const reader = request.body?.getReader();
@@ -176,6 +177,50 @@ export async function parseCaseDocumentRequest(request: Request): Promise<string
 	return note;
 }
 
+export async function parseCaseOpinionRequest(request: Request): Promise<string> {
+	const contentLength = Number(request.headers.get("content-length"));
+	if (Number.isFinite(contentLength) && contentLength > MAX_OPINION_REQUEST_SIZE) {
+		throw new CaseUploadTooLargeError("Opinion request body must not exceed 64 KiB.");
+	}
+	const reader = request.body?.getReader();
+	if (!reader) throw new InvalidCaseInputError("Request body must be valid JSON.");
+	const chunks: Uint8Array[] = [];
+	let bytesRead = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			bytesRead += value.byteLength;
+			if (bytesRead > MAX_OPINION_REQUEST_SIZE) {
+				await reader.cancel().catch(() => undefined);
+				throw new CaseUploadTooLargeError("Opinion request body must not exceed 64 KiB.");
+			}
+			chunks.push(value);
+		}
+	} catch (error) {
+		if (error instanceof CaseUploadTooLargeError) throw error;
+		throw new InvalidCaseInputError("Request body must be valid JSON.");
+	}
+	const bodyBytes = new Uint8Array(bytesRead);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bodyBytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	let body: unknown;
+	try {
+		body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bodyBytes));
+	} catch {
+		throw new InvalidCaseInputError("Request body must be valid JSON.");
+	}
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		throw new InvalidCaseInputError("Request body must be a JSON object.");
+	}
+	const opinion = (body as Record<string, unknown>).opinion;
+	if (typeof opinion !== "string") throw new InvalidCaseInputError("opinion must be text.");
+	return opinion;
+}
+
 export async function parseCaseDocumentUploads(request: Request): Promise<CaseDocumentUpload[]> {
 	const contentLength = Number(request.headers.get("content-length"));
 	if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_SIZE) {
@@ -285,6 +330,7 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	CASE_DOCUMENT_NOT_FOUND: 404,
 	CASE_DOCUMENT_REQUIRED: 409,
 	CASE_DOCUMENT_REQUEST_CONFLICT: 409,
+	CASE_OPINION_CONFLICT: 409,
 	CASE_DOCTOR_SELECTION_CONFLICT: 409,
 	CASE_SUBMISSION_CONFLICT: 409,
 	PAYMENT_ATTEMPT_CONFLICT: 409,

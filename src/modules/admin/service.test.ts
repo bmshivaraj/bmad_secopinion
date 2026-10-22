@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import argon2 from "argon2";
+import { Prisma } from "../../generated/prisma/client";
 import { verifyAuthToken } from "../../shared/auth-context";
 
 process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopinion_test";
@@ -113,6 +114,27 @@ test("Admin catalog operations delegate active listing and creation to Doctors",
     name: "Rheumatology",
   });
   assert.deepEqual(calls.slice(-2), [["list-specialties"], ["create-specialty", "Rheumatology"]]);
+});
+
+test("Admin service exposes only the current fee values to internal consumers", async () => {
+  const standardCaseFee = new Prisma.Decimal("1000.00");
+  const urgentCaseFee = new Prisma.Decimal("2000.00");
+  const now = new Date();
+  const service = createAdminService({
+    async findByUsername() { return null; },
+    async getPlatformSettings() {
+      return {
+        id: randomUUID(),
+        standardCaseFee,
+        urgentCaseFee,
+        platformFeePercent: new Prisma.Decimal("20.00"),
+        createdAt: now,
+        updatedAt: now,
+      };
+    },
+  });
+
+  assert.deepEqual(await service.getPlatformSettings(), { standardCaseFee, urgentCaseFee });
 });
 
 test("non-Admin callers cannot read or decide applications", async () => {

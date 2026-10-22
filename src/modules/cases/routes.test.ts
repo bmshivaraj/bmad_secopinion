@@ -7,6 +7,7 @@ process.env.JWT_SECRET ??= "cases-route-test-secret";
 const {
 	parseCaseDocumentUploads,
 	parseCaseDraftRequest,
+	parseCaseSubmissionRequest,
 	parseDoctorSelectionRequest,
 	requireDocumentReaderContext,
 	requirePatientContext,
@@ -14,6 +15,8 @@ const {
 const { GET: getDocumentRoute } = await import("../../app/api/cases/documents/[documentId]/route");
 const { GET: getDoctorDirectoryRoute } = await import("../../app/api/cases/doctors/route");
 const { PATCH: patchDoctorSelectionRoute } = await import("../../app/api/cases/[caseId]/selection/route");
+const { POST: postCaseSubmitRoute } = await import("../../app/api/cases/[caseId]/submit/route");
+const { GET: getCaseFeesRoute } = await import("../../app/api/cases/fees/route");
 const { casesService } = await import("./service");
 const { CaseAccessDeniedError } = await import("./domain");
 const { signAuthToken } = await import("../../shared/auth-context");
@@ -56,11 +59,14 @@ test("Doctor directory and draft selection routes require Patient auth and retur
 		const now = new Date();
 		return {
 			id: caseId,
+			doctorId: null,
 			affectedBodyArea: "Knee",
 			condition: "Pain",
 			recommendation: "Review",
 			additionalDetails: "",
 			selectedDoctorId,
+			urgencyTier: null,
+			chargedAmount: null,
 			status: "Draft",
 			documents: [],
 			createdAt: now,
@@ -221,5 +227,61 @@ test("document GET route returns private attachment headers and denies unauthori
 		assert.equal(denied.status, 401);
 	} finally {
 		casesService.getDocument = originalGetDocument;
+	}
+});
+
+test("submission parser accepts only the supported urgency tiers", async () => {
+	assert.deepEqual(await parseCaseSubmissionRequest(new Request("http://localhost", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ urgencyTier: "Urgent", selectedDoctorId: " doctor-1 " }),
+	})), { urgencyTier: "Urgent", selectedDoctorId: "doctor-1" });
+	assert.deepEqual(await parseCaseSubmissionRequest(new Request("http://localhost", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ urgencyTier: "Standard" }),
+	})), { urgencyTier: "Standard" });
+	await assert.rejects(parseCaseSubmissionRequest(new Request("http://localhost", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ urgencyTier: "Emergency" }),
+	})), { code: "VALIDATION_ERROR" });
+});
+
+test("submit and fee routes require Patient auth and return private envelopes", async () => {
+	const originalMethods = { submitCase: casesService.submitCase, getPaymentOptions: casesService.getPaymentOptions };
+	let submittedBy = "";
+	casesService.submitCase = async (caller, caseId, urgencyTier, selectedDoctorId) => {
+		submittedBy = caller.userId;
+		return { caseId, doctorId: selectedDoctorId ?? null, urgencyTier, chargedAmount: "2000.00", selectedDoctorId: selectedDoctorId ?? null, status: "Submitted" };
+	};
+	casesService.getPaymentOptions = async () => ({ standardCaseFee: "1000.00", urgentCaseFee: "2000.00" });
+	try {
+		const patientToken = signAuthToken({ userId: "patient-1", role: "patient" });
+		const response = await postCaseSubmitRoute(new Request("http://localhost/api/cases/case-1/submit", {
+			method: "POST",
+			headers: { cookie: `patient_session=${patientToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ urgencyTier: "Urgent", selectedDoctorId: "doctor-1" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("cache-control"), "private, no-store");
+		assert.equal(submittedBy, "patient-1");
+		assert.equal((await response.json() as { data: { chargedAmount: string } }).data.chargedAmount, "2000.00");
+
+		const fees = await getCaseFeesRoute(new Request("http://localhost/api/cases/fees", {
+			headers: { cookie: `patient_session=${patientToken}` },
+		}));
+		assert.equal(fees.status, 200);
+		assert.equal(fees.headers.get("cache-control"), "private, no-store");
+		assert.deepEqual((await fees.json() as { data: unknown }).data, { standardCaseFee: "1000.00", urgentCaseFee: "2000.00" });
+
+		const unauthorized = await postCaseSubmitRoute(new Request("http://localhost/api/cases/case-1/submit", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ urgencyTier: "Standard" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(unauthorized.status, 401);
+	} finally {
+		Object.assign(casesService, originalMethods);
 	}
 });

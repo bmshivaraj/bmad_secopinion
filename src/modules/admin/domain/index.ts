@@ -24,6 +24,14 @@ export class AdminAccessDeniedError extends DomainError {
 	}
 }
 
+export class PlatformSettingsUnavailableError extends DomainError {
+	readonly code = "PLATFORM_SETTINGS_UNAVAILABLE";
+
+	constructor() {
+		super("Platform case fees are not configured.");
+	}
+}
+
 export class AdminSessionAuthorizationError extends DomainError {
 	readonly code = "ADMIN_SESSION_UNAUTHORIZED";
 

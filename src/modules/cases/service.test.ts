@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { Prisma } from "../../generated/prisma/client";
 import type { AuthContext } from "../../shared/auth-context";
 import type { StorageProvider } from "../../shared/storage-provider";
 import type { CaseDocumentRecord, CaseDocumentUpload, CaseDraftInput, CaseRecord } from "./domain";
+import type { PaymentAttempt } from "../payments/domain";
 
 process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopinion_test";
 process.env.JWT_SECRET ??= "cases-auth-test-secret";
@@ -11,6 +13,7 @@ process.env.JWT_SECRET ??= "cases-auth-test-secret";
 const { createCasesService } = await import("./service");
 const { casesRepository } = await import("./repository");
 const { prisma } = await import("../../shared/prisma-client");
+const { PaymentDeclinedError } = await import("../payments/domain");
 
 const PATIENT: AuthContext = { userId: "patient-a", role: "patient" };
 const OTHER_PATIENT: AuthContext = { userId: "patient-b", role: "patient" };
@@ -28,7 +31,16 @@ function upload(contentType = "application/pdf", bytes = new TextEncoder().encod
 	return { contentType, bytes, fileName };
 }
 
-function createFixture(options: { failSaveAt?: number; failDocumentPersistence?: boolean; failDelete?: boolean } = {}) {
+function createFixture(options: {
+	failSaveAt?: number;
+	failDocumentPersistence?: boolean;
+	failDelete?: boolean;
+	failSubmissionPersistence?: boolean;
+	failPayment?: boolean;
+	failSettings?: boolean;
+	standardCaseFee?: string;
+	urgentCaseFee?: string;
+} = {}) {
 	const cases = new Map<string, CaseRecord>();
 		const requestCases = new Map<string, string>();
 	const documents = new Map<string, CaseDocumentRecord>();
@@ -36,6 +48,13 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 	let saveCalls = 0;
 	let readCalls = 0;
 	let failDelete = options.failDelete ?? false;
+	let failSubmissionPersistence = options.failSubmissionPersistence ?? false;
+	let failPayment = options.failPayment ?? false;
+	let failSettings = options.failSettings ?? false;
+	let standardCaseFee = options.standardCaseFee ?? "1000.00";
+	let urgentCaseFee = options.urgentCaseFee ?? "2000.00";
+	let chargeCalls = 0;
+	const attempts = new Map<string, PaymentAttempt>();
 	const deleteCalls: string[] = [];
 
 	const repository = {
@@ -43,7 +62,7 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 			if (requestCases.has(creationRequestId)) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
 			const now = new Date();
 			const record: CaseRecord = {
-				id: randomUUID(), patientId, ...input, selectedDoctorId: null, status: "Draft", documents: [], createdAt: now, updatedAt: now,
+				id: randomUUID(), patientId, doctorId: null, ...input, selectedDoctorId: null, urgencyTier: null, chargedAmount: null, status: "Draft", documents: [], createdAt: now, updatedAt: now,
 			};
 			cases.set(record.id, record);
 			requestCases.set(creationRequestId, record.id);
@@ -68,6 +87,20 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 			const record = cases.get(caseId);
 			if (!record || record.patientId !== patientId || record.status !== "Draft") return null;
 			const updated = { ...record, selectedDoctorId, updatedAt: new Date() };
+			cases.set(caseId, updated);
+			return updated;
+		},
+		async updateCaseToSubmitted(
+			caseId: string,
+			patientId: string,
+			urgencyTier: "Standard" | "Urgent",
+			chargedAmount: CaseRecord["chargedAmount"] & {},
+			doctorId: string | null,
+		): Promise<CaseRecord | null> {
+			if (failSubmissionPersistence) throw new Error("case submission persistence failed");
+			const record = cases.get(caseId);
+			if (!record || record.patientId !== patientId || record.status !== "Draft" || !chargedAmount) return null;
+			const updated = { ...record, urgencyTier, chargedAmount, doctorId, selectedDoctorId: doctorId, status: "Submitted" as const, updatedAt: new Date() };
 			cases.set(caseId, updated);
 			return updated;
 		},
@@ -143,6 +176,47 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 			};
 		},
 	};
+	const admin = {
+		async getPlatformSettings() {
+			if (failSettings) throw new Error("platform settings unavailable");
+			return {
+				standardCaseFee: new Prisma.Decimal(standardCaseFee),
+				urgentCaseFee: new Prisma.Decimal(urgentCaseFee),
+			};
+		},
+	};
+	const payments = {
+		async findAttemptByCaseId(caseId: string) {
+			return attempts.get(caseId) ?? null;
+		},
+		async prepareAttempt(input: Omit<PaymentAttempt, "id" | "idempotencyKey" | "transactionId" | "status" | "providerError" | "createdAt" | "updatedAt">) {
+			const existing = attempts.get(input.caseId);
+			if (existing && existing.status !== "Failed") return existing;
+			const now = new Date();
+			const attempt: PaymentAttempt = {
+				...input,
+				id: existing?.id ?? randomUUID(),
+				idempotencyKey: randomUUID(),
+				transactionId: null,
+				status: "Pending",
+				providerError: null,
+				createdAt: existing?.createdAt ?? now,
+				updatedAt: now,
+			};
+			attempts.set(input.caseId, attempt);
+			return attempt;
+		},
+		async chargeAttempt(attempt: PaymentAttempt) {
+			chargeCalls += 1;
+			if (failPayment) {
+				attempts.set(attempt.caseId, { ...attempt, status: "Failed", providerError: "declined" });
+				throw new PaymentDeclinedError();
+			}
+			const succeeded = { ...attempt, status: "Succeeded" as const, transactionId: randomUUID() };
+			attempts.set(attempt.caseId, succeeded);
+			return succeeded;
+		},
+	};
 
 	return {
 		cases,
@@ -152,8 +226,14 @@ function createFixture(options: { failSaveAt?: number; failDocumentPersistence?:
 		get saveCalls() { return saveCalls; },
 		get readCalls() { return readCalls; },
 		get doctorLookupCalls() { return doctorLookupCalls; },
+		get chargeCalls() { return chargeCalls; },
+		attempts,
 		setFailDelete(value: boolean) { failDelete = value; },
-		service: createCasesService(repository, storage, doctors),
+		setFailSubmissionPersistence(value: boolean) { failSubmissionPersistence = value; },
+		setFailPayment(value: boolean) { failPayment = value; },
+		setFailSettings(value: boolean) { failSettings = value; },
+		setFees(standard: string, urgent: string) { standardCaseFee = standard; urgentCaseFee = urgent; },
+		service: createCasesService(repository, storage, doctors, admin, payments),
 	};
 }
 
@@ -175,7 +255,7 @@ test("Doctor preference saves, restores, rejects stale IDs, and can be cleared w
 	const selected = await fixture.service.saveDraftDoctorSelection(PATIENT, created.id, "doctor-verified");
 	assert.equal(selected.selectedDoctorId, "doctor-verified");
 	assert.equal(fixture.cases.get(created.id)?.selectedDoctorId, "doctor-verified");
-	assert.equal("doctorId" in selected, false);
+	assert.equal(selected.doctorId, null);
 	assert.equal((await fixture.service.getOwnDraft(PATIENT))?.selectedDoctorId, "doctor-verified");
 	const normalized = await fixture.service.saveDraftDoctorSelection(PATIENT, created.id, " doctor-verified ");
 	assert.equal(normalized.selectedDoctorId, "doctor-verified");
@@ -231,6 +311,112 @@ test("payment readiness stays blocked until a valid supporting Document is attac
 
 	await fixture.service.uploadDocuments(PATIENT, draft.id, [upload()]);
 	assert.deepEqual(await fixture.service.assertPaymentReady(PATIENT, draft.id), { caseId: draft.id, ready: true });
+});
+
+test("fee settings failure prevents payment and leaves the Case Draft", async () => {
+	const fixture = createFixture({ failSettings: true });
+	const draft = await fixture.service.saveDraft(PATIENT, VALID_INPUT);
+	await fixture.service.uploadDocuments(PATIENT, draft.id, [upload()]);
+
+	await assert.rejects(fixture.service.submitCase(PATIENT, draft.id, "Standard"), /platform settings unavailable/);
+	assert.equal(fixture.chargeCalls, 0);
+	assert.equal(fixture.attempts.has(draft.id), false);
+	assert.equal(fixture.cases.get(draft.id)?.status, "Draft");
+});
+
+test("submission requires a Document, charges the current selected fee, snapshots it, and treats duplicates idempotently", async () => {
+	const fixture = createFixture();
+	const missingDocument = await fixture.service.saveDraft(PATIENT, VALID_INPUT);
+	await assert.rejects(fixture.service.submitCase(PATIENT, missingDocument.id, "Standard"), { code: "CASE_DOCUMENT_REQUIRED" });
+	assert.equal(fixture.chargeCalls, 0);
+
+	const standardDraft = await fixture.service.saveDraft(PATIENT, VALID_INPUT);
+	await fixture.service.uploadDocuments(PATIENT, standardDraft.id, [upload()]);
+	assert.deepEqual(await fixture.service.getPaymentOptions(PATIENT), { standardCaseFee: "1000.00", urgentCaseFee: "2000.00" });
+	const standard = await fixture.service.submitCase(PATIENT, standardDraft.id, "Standard");
+	assert.deepEqual(standard, {
+		caseId: standardDraft.id,
+		doctorId: null,
+		urgencyTier: "Standard",
+		chargedAmount: "1000.00",
+		selectedDoctorId: null,
+		status: "Submitted",
+	});
+	assert.equal(fixture.cases.get(standardDraft.id)?.status, "Submitted");
+
+	fixture.setFees("1250.75", "2500.25");
+	const urgentDraft = await fixture.service.saveDraft(PATIENT, VALID_INPUT);
+	await fixture.service.uploadDocuments(PATIENT, urgentDraft.id, [upload()]);
+	const urgent = await fixture.service.submitCase(PATIENT, urgentDraft.id, "Urgent", "doctor-verified");
+	assert.equal(urgent.chargedAmount, "2500.25");
+	assert.equal(urgent.urgencyTier, "Urgent");
+	assert.equal(urgent.doctorId, "doctor-verified");
+	assert.equal(fixture.cases.get(urgentDraft.id)?.selectedDoctorId, "doctor-verified");
+	assert.equal(fixture.cases.get(urgentDraft.id)?.doctorId, "doctor-verified");
+	assert.equal(fixture.cases.get(standardDraft.id)?.chargedAmount?.toFixed(2), "1000.00");
+	assert.equal(fixture.chargeCalls, 2);
+
+	const duplicate = await fixture.service.submitCase(PATIENT, standardDraft.id, "Urgent");
+	assert.equal(duplicate.chargedAmount, "1000.00");
+	assert.equal(fixture.chargeCalls, 2);
+	await assert.rejects(fixture.service.submitCase(OTHER_PATIENT, standardDraft.id, "Standard"), { code: "CASE_ACCESS_DENIED" });
+});
+
+test("failed payment keeps the Case Draft and restores urgency and Doctor choice for retry", async () => {
+	const fixture = createFixture({ failPayment: true });
+	const draft = await fixture.service.saveDraft(PATIENT, VALID_INPUT);
+	await fixture.service.uploadDocuments(PATIENT, draft.id, [upload()]);
+	await assert.rejects(fixture.service.submitCase(PATIENT, draft.id, "Urgent", "doctor-verified"), { code: "PAYMENT_DECLINED" });
+	assert.equal(fixture.cases.get(draft.id)?.status, "Draft");
+	assert.equal(fixture.cases.get(draft.id)?.urgencyTier, null);
+	assert.equal(fixture.attempts.get(draft.id)?.status, "Failed");
+	const restoredDraft = await fixture.service.getOwnDraft(PATIENT);
+	assert.equal(restoredDraft?.urgencyTier, "Urgent");
+	assert.equal(restoredDraft?.selectedDoctorId, "doctor-verified");
+	assert.equal(restoredDraft?.paymentAttemptStatus, "Failed");
+	assert.equal(restoredDraft?.chargedAmount, null);
+	await fixture.service.saveDraftDoctorSelection(PATIENT, draft.id, null);
+	assert.equal((await fixture.service.getOwnDraft(PATIENT))?.selectedDoctorId, null);
+
+	fixture.setFailPayment(false);
+	fixture.setFees("1200.00", "2200.00");
+	const retried = await fixture.service.submitCase(PATIENT, draft.id, "Urgent");
+	assert.equal(retried.chargedAmount, "2200.00");
+	assert.equal(retried.selectedDoctorId, null);
+	assert.equal(fixture.chargeCalls, 2);
+});
+
+test("stale Doctor preference blocks charging and confirmed payment recovers Case finalization without another charge", async () => {
+	const staleDoctor = createFixture();
+	const staleDraft = await staleDoctor.service.saveDraft(PATIENT, VALID_INPUT);
+	await staleDoctor.service.uploadDocuments(PATIENT, staleDraft.id, [upload()]);
+	await assert.rejects(staleDoctor.service.submitCase(PATIENT, staleDraft.id, "Standard", "doctor-pending"), { code: "CASE_DOCTOR_SELECTION_CONFLICT" });
+	assert.equal(staleDoctor.chargeCalls, 0);
+	assert.equal(staleDoctor.cases.get(staleDraft.id)?.status, "Draft");
+
+	const recovery = createFixture({ failSubmissionPersistence: true });
+	const recoveryDraft = await recovery.service.saveDraft(PATIENT, VALID_INPUT);
+	const recoveryDocuments = await recovery.service.uploadDocuments(PATIENT, recoveryDraft.id, [upload()]);
+	await assert.rejects(recovery.service.submitCase(PATIENT, recoveryDraft.id, "Urgent"), { code: "PAYMENT_RECOVERY_REQUIRED" });
+	assert.equal(recovery.attempts.get(recoveryDraft.id)?.status, "Succeeded");
+	assert.equal(recovery.cases.get(recoveryDraft.id)?.status, "Draft");
+	assert.equal(recovery.chargeCalls, 1);
+	const recoverableDraft = await recovery.service.getOwnDraft(PATIENT);
+	assert.equal(recoverableDraft?.paymentAttemptStatus, "Succeeded");
+	assert.equal(recoverableDraft?.chargedAmount, "2000.00");
+	const recoveryRecord = recovery.cases.get(recoveryDraft.id);
+	assert.ok(recoveryRecord);
+	recovery.cases.set(recoveryDraft.id, { ...recoveryRecord, documents: [] });
+	await assert.rejects(recovery.service.saveDraft(PATIENT, VALID_INPUT, recoveryDraft.id), { code: "CASE_SUBMISSION_CONFLICT" });
+	await assert.rejects(recovery.service.saveDraftDoctorSelection(PATIENT, recoveryDraft.id, "doctor-verified"), { code: "CASE_SUBMISSION_CONFLICT" });
+	await assert.rejects(recovery.service.deleteDocument(recoveryDocuments[0].id, PATIENT), { code: "CASE_SUBMISSION_CONFLICT" });
+	assert.equal(recovery.deleteCalls.length, 0);
+
+	recovery.setFailSubmissionPersistence(false);
+	const finalized = await recovery.service.submitCase(PATIENT, recoveryDraft.id, "Standard");
+	assert.equal(finalized.urgencyTier, "Urgent");
+	assert.equal(finalized.chargedAmount, "2000.00");
+	assert.equal(recovery.chargeCalls, 1);
 });
 
 test("JPEG, PNG, and PDF uploads validate signatures and accept five files at the 10 MiB boundary", async () => {
@@ -331,6 +517,8 @@ test("selection repository updates only the Patient-owned Draft and returns the 
 			recommendation: "Review",
 			additionalDetails: "",
 			selectedDoctorId: "doctor-verified",
+			urgencyTier: null,
+			chargedAmount: null,
 			status: "Draft",
 			documents: [],
 			createdAt: new Date(),
@@ -348,6 +536,51 @@ test("selection repository updates only the Patient-owned Draft and returns the 
 			where: { id: caseId },
 			include: { documents: { orderBy: { createdAt: "asc" } } },
 		});
+	} finally {
+		caseDelegate.updateMany = originals.updateMany;
+		caseDelegate.findUnique = originals.findUnique;
+	}
+});
+
+test("submission repository conditionally transitions only an owned Draft and stores the exact fee snapshot", async () => {
+	const caseDelegate = prisma.case as unknown as {
+		updateMany: (args: unknown) => Promise<{ count: number }>;
+		findUnique: (args: unknown) => Promise<unknown>;
+	};
+	const originals = { updateMany: caseDelegate.updateMany, findUnique: caseDelegate.findUnique };
+	const caseId = randomUUID();
+	let updateArgs: unknown;
+	caseDelegate.updateMany = async (args) => {
+		updateArgs = args;
+		return { count: 1 };
+	};
+	caseDelegate.findUnique = async () => ({
+		id: caseId,
+		patientId: PATIENT.userId,
+		affectedBodyArea: "Knee",
+		condition: "Pain",
+		recommendation: "Review",
+		additionalDetails: "",
+		selectedDoctorId: "doctor-verified",
+		urgencyTier: "Urgent",
+		chargedAmount: new Prisma.Decimal("2000.00"),
+		doctorId: "doctor-verified",
+		status: "Submitted",
+		documents: [],
+		createdAt: new Date(),
+		updatedAt: new Date(),
+	});
+	try {
+		const amount = new Prisma.Decimal("2000.00");
+		const submitted = await casesRepository.updateCaseToSubmitted(caseId, PATIENT.userId, "Urgent", amount, "doctor-verified");
+		assert.equal(submitted?.status, "Submitted");
+		assert.equal(submitted?.doctorId, "doctor-verified");
+		assert.equal(submitted?.chargedAmount?.toFixed(2), "2000.00");
+		const args = updateArgs as { where: Record<string, unknown>; data: Record<string, unknown> };
+		assert.deepEqual(args.where, { id: caseId, patientId: PATIENT.userId, status: "Draft" });
+		assert.equal(args.data.status, "Submitted");
+		assert.equal(args.data.doctorId, "doctor-verified");
+		assert.equal((args.data.chargedAmount as Prisma.Decimal).toFixed(2), "2000.00");
 	} finally {
 		caseDelegate.updateMany = originals.updateMany;
 		caseDelegate.findUnique = originals.findUnique;

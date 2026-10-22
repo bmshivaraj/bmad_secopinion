@@ -1,5 +1,6 @@
 // Cases module's own DB access (AD-2) -- no other module may query these tables directly.
 import { prisma } from "../../shared/prisma-client";
+import type { Prisma } from "../../generated/prisma/client";
 import type { CaseDocumentRecord, CaseDraftInput, CaseRecord } from "./domain";
 
 const draftInclude = { documents: { orderBy: { createdAt: "asc" as const } } } as const;
@@ -38,6 +39,21 @@ export const casesRepository = {
 		const updated = await prisma.case.updateMany({
 			where: { id: caseId, patientId, status: "Draft" },
 			data: { selectedDoctorId },
+		});
+		if (updated.count === 0) return null;
+		return prisma.case.findUnique({ where: { id: caseId }, include: draftInclude });
+	},
+
+	async updateCaseToSubmitted(
+		caseId: string,
+		patientId: string,
+		urgencyTier: "Standard" | "Urgent",
+		chargedAmount: Prisma.Decimal,
+		doctorId: string | null,
+	): Promise<CaseRecord | null> {
+		const updated = await prisma.case.updateMany({
+			where: { id: caseId, patientId, status: "Draft" },
+			data: { status: "Submitted", urgencyTier, chargedAmount, doctorId, selectedDoctorId: doctorId },
 		});
 		if (updated.count === 0) return null;
 		return prisma.case.findUnique({ where: { id: caseId }, include: draftInclude });

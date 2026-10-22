@@ -6,4 +6,8 @@ export const adminRepository = {
 	async findByUsername(username: string): Promise<AdminAccount | null> {
 		return prisma.adminAccount.findUnique({ where: { username } });
 	},
+
+	async getPlatformSettings() {
+		return prisma.platformSettings.findFirst({ orderBy: { updatedAt: "desc" } });
+	},
 };

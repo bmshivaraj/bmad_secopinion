@@ -90,6 +90,35 @@ export async function parseDoctorSelectionRequest(request: Request): Promise<str
 	return typeof selectedDoctorId === "string" ? selectedDoctorId.trim() : null;
 }
 
+export async function parseCaseSubmissionRequest(request: Request): Promise<{
+	urgencyTier: "Standard" | "Urgent";
+	selectedDoctorId?: string | null;
+}> {
+	let body: unknown;
+	try {
+		body = await request.json();
+	} catch {
+		throw new InvalidCaseInputError("Request body must be valid JSON.");
+	}
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		throw new InvalidCaseInputError("Request body must be a JSON object.");
+	}
+	const values = body as Record<string, unknown>;
+	if (values.urgencyTier !== "Standard" && values.urgencyTier !== "Urgent") {
+		throw new InvalidCaseInputError("urgencyTier must be Standard or Urgent.");
+	}
+	if (values.selectedDoctorId !== undefined && values.selectedDoctorId !== null
+		&& (typeof values.selectedDoctorId !== "string" || !values.selectedDoctorId.trim())) {
+		throw new InvalidCaseInputError("selectedDoctorId must be a non-empty string or null.");
+	}
+	return {
+		urgencyTier: values.urgencyTier,
+		...(values.selectedDoctorId !== undefined
+			? { selectedDoctorId: typeof values.selectedDoctorId === "string" ? values.selectedDoctorId.trim() : null }
+			: {}),
+	};
+}
+
 export async function parseCaseDocumentUploads(request: Request): Promise<CaseDocumentUpload[]> {
 	const contentLength = Number(request.headers.get("content-length"));
 	if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_SIZE) {
@@ -165,6 +194,11 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	CASE_DOCUMENT_NOT_FOUND: 404,
 	CASE_DOCUMENT_REQUIRED: 409,
 	CASE_DOCTOR_SELECTION_CONFLICT: 409,
+	CASE_SUBMISSION_CONFLICT: 409,
+	PAYMENT_ATTEMPT_CONFLICT: 409,
+	PAYMENT_DECLINED: 402,
+	PAYMENT_RECOVERY_REQUIRED: 503,
+	PLATFORM_SETTINGS_UNAVAILABLE: 503,
 	UPLOAD_TOO_LARGE: 413,
 };
 

@@ -18,15 +18,33 @@ interface CaseDocument {
 
 interface CaseDraft {
 	id: string;
+	doctorId: string | null;
 	affectedBodyArea: string;
 	condition: string;
 	recommendation: string;
 	additionalDetails: string;
 	selectedDoctorId: string | null;
-	status: "Draft";
+	urgencyTier: "Standard" | "Urgent" | null;
+	chargedAmount: string | null;
+	paymentAttemptStatus?: "Pending" | "Failed" | "Succeeded" | null;
+	status: "Draft" | "Submitted";
 	documents: CaseDocument[];
 	createdAt: string;
 	updatedAt: string;
+}
+
+interface PaymentOptions {
+	standardCaseFee: string;
+	urgentCaseFee: string;
+}
+
+interface CaseSubmission {
+	caseId: string;
+	doctorId: string | null;
+	urgencyTier: "Standard" | "Urgent";
+	chargedAmount: string;
+	selectedDoctorId: string | null;
+	status: "Submitted";
 }
 
 interface DoctorDirectoryEntry {
@@ -78,6 +96,8 @@ export default function NewCasePage() {
 	const [fields, setFields] = useState<DraftFields>(EMPTY_FIELDS);
 	const creationRequestId = useRef<string | null>(null);
 	const [draft, setDraft] = useState<CaseDraft | null>(null);
+	const [paymentOptions, setPaymentOptions] = useState<PaymentOptions | null>(null);
+	const [urgencyTier, setUrgencyTier] = useState<"Standard" | "Urgent">("Standard");
 	const [doctors, setDoctors] = useState<DoctorDirectoryEntry[]>([]);
 	const [selectedDoctorId, setSelectedDoctorId] = useState<string | null>(null);
 	const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -95,6 +115,7 @@ export default function NewCasePage() {
 				if (!savedDraft) return;
 				setDraft(savedDraft);
 				setSelectedDoctorId(savedDraft.selectedDoctorId);
+				if (savedDraft.urgencyTier) setUrgencyTier(savedDraft.urgencyTier);
 				setFields({
 					affectedBodyArea: savedDraft.affectedBodyArea,
 					condition: savedDraft.condition,
@@ -104,6 +125,12 @@ export default function NewCasePage() {
 			})
 			.catch((loadError: unknown) => setError(errorMessage(loadError)))
 			.finally(() => setIsLoading(false));
+	}, []);
+
+	useEffect(() => {
+		requestApi<PaymentOptions>("/api/cases/fees")
+			.then(setPaymentOptions)
+			.catch((loadError: unknown) => setError(errorMessage(loadError)));
 	}, []);
 
 	useEffect(() => {
@@ -137,7 +164,7 @@ export default function NewCasePage() {
 		setNotice("");
 		setIsBusy(true);
 		try {
-			await saveCurrentDraft();
+			if (!hasRecoverablePayment) await saveCurrentDraft();
 			setNotice("Draft saved. You can return to finish it later.");
 		} catch (saveError) {
 			setError(errorMessage(saveError));
@@ -199,20 +226,59 @@ export default function NewCasePage() {
 		}
 	}
 
-	async function handleReadiness() {
-		if (!draft) {
-			setError("Save your condition details before checking the next step.");
+	async function handleSubmitCase() {
+		if (!draft || draft.documents.length === 0) {
+			setError("Save your details and upload at least one supporting document before submitting.");
+			return;
+		}
+		if (!paymentOptions && !hasRecoverablePayment) {
+			setError("Current case fees are unavailable. Try again shortly.");
 			return;
 		}
 		setError("");
 		setNotice("");
 		setIsBusy(true);
 		try {
+			if (!hasRecoverablePayment) {
+				if (!paymentOptions) throw new Error("Current case fees are unavailable. Try again shortly.");
+				const latestOptions = await requestApi<PaymentOptions>("/api/cases/fees");
+				const displayedFee = urgencyTier === "Urgent" ? paymentOptions.urgentCaseFee : paymentOptions.standardCaseFee;
+				const currentFee = urgencyTier === "Urgent" ? latestOptions.urgentCaseFee : latestOptions.standardCaseFee;
+				if (displayedFee !== currentFee) {
+					setPaymentOptions(latestOptions);
+					setNotice("The current fee changed. Review the updated amount and submit again.");
+					return;
+				}
+			}
 			await saveCurrentDraft();
-			await requestApi<{ caseId: string; ready: true }>(`/api/cases/${draft.id}/readiness`);
-			setNotice("Your draft has the required supporting document for the next step.");
-		} catch (readinessError) {
-			setError(errorMessage(readinessError));
+			const result = await requestApi<CaseSubmission>(`/api/cases/${draft.id}/submit`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ urgencyTier, selectedDoctorId }),
+			});
+			setDraft((current) => current ? {
+				...current,
+				doctorId: result.doctorId,
+				status: "Submitted",
+				urgencyTier: result.urgencyTier,
+				chargedAmount: result.chargedAmount,
+				selectedDoctorId: result.selectedDoctorId,
+			} : current);
+			setSelectedDoctorId(result.selectedDoctorId);
+			setUrgencyTier(result.urgencyTier);
+			setNotice(`Payment complete. Your Case was submitted for review at ₹${result.chargedAmount}.`);
+		} catch (submitError) {
+			setError(errorMessage(submitError));
+			try {
+				const refreshedDraft = await requestApi<CaseDraft | null>("/api/cases/draft");
+				if (refreshedDraft) {
+					setDraft(refreshedDraft);
+					setSelectedDoctorId(refreshedDraft.selectedDoctorId);
+					if (refreshedDraft.urgencyTier) setUrgencyTier(refreshedDraft.urgencyTier);
+				}
+			} catch {
+				// Keep the submission error visible if refreshing retry state also fails.
+			}
 		} finally {
 			setIsBusy(false);
 		}
@@ -247,6 +313,12 @@ export default function NewCasePage() {
 		await persistDoctorSelection(selectedDoctorId);
 	}
 
+	const isSubmitted = draft?.status === "Submitted";
+	const hasRecoverablePayment = draft?.paymentAttemptStatus === "Pending" || draft?.paymentAttemptStatus === "Succeeded";
+	const selectedFee = hasRecoverablePayment
+		? draft?.chargedAmount ?? undefined
+		: urgencyTier === "Urgent" ? paymentOptions?.urgentCaseFee : paymentOptions?.standardCaseFee;
+
 	return (
 		<main className="case-page">
 			<header className="case-topbar">
@@ -259,9 +331,9 @@ export default function NewCasePage() {
 
 			<div className="case-content">
 				<div className="case-heading">
-					<p className="case-kicker">PATIENT INTAKE <span>/</span> PRIVATE DRAFT</p>
-					<h1>Tell us what's happening.</h1>
-					<p className="case-intro">Describe your current condition and the treatment recommendation you received. You can save now and return to add documents later.</p>
+					<p className="case-kicker">PATIENT INTAKE <span>/</span> {isSubmitted ? "SUBMITTED CASE" : "PRIVATE DRAFT"}</p>
+					<h1>{isSubmitted ? "Case submitted." : "Tell us what's happening."}</h1>
+					<p className="case-intro">{isSubmitted ? "Your payment and review preference are recorded. The Case is now submitted." : "Describe your current condition and the treatment recommendation you received. You can save now and return to add documents later."}</p>
 				</div>
 
 				{error && <p className="case-message case-message-error" role="alert">{error}</p>}
@@ -282,24 +354,24 @@ export default function NewCasePage() {
 							<div className="case-fields-grid">
 								<div className="case-field case-field-area">
 									<label htmlFor="affectedBodyArea">Affected body area</label>
-									<input id="affectedBodyArea" name="affectedBodyArea" autoComplete="off" maxLength={120} required disabled={isBusy} value={fields.affectedBodyArea} onChange={(event) => updateField("affectedBodyArea", event.target.value)} placeholder="For example, left knee" />
+									<input id="affectedBodyArea" name="affectedBodyArea" autoComplete="off" maxLength={120} required disabled={isBusy || isSubmitted || hasRecoverablePayment} value={fields.affectedBodyArea} onChange={(event) => updateField("affectedBodyArea", event.target.value)} placeholder="For example, left knee" />
 								</div>
 								<div className="case-field">
 									<label htmlFor="condition">Current condition or diagnosis</label>
-									<textarea id="condition" name="condition" maxLength={2000} required disabled={isBusy} value={fields.condition} onChange={(event) => updateField("condition", event.target.value)} placeholder="What have you been told about your condition?" rows={4} />
+									<textarea id="condition" name="condition" maxLength={2000} required disabled={isBusy || isSubmitted || hasRecoverablePayment} value={fields.condition} onChange={(event) => updateField("condition", event.target.value)} placeholder="What have you been told about your condition?" rows={4} />
 								</div>
 								<div className="case-field">
 									<label htmlFor="recommendation">Treatment or surgery recommendation</label>
-									<textarea id="recommendation" name="recommendation" maxLength={2000} required disabled={isBusy} value={fields.recommendation} onChange={(event) => updateField("recommendation", event.target.value)} placeholder="What treatment or surgery was recommended?" rows={4} />
+									<textarea id="recommendation" name="recommendation" maxLength={2000} required disabled={isBusy || isSubmitted || hasRecoverablePayment} value={fields.recommendation} onChange={(event) => updateField("recommendation", event.target.value)} placeholder="What treatment or surgery was recommended?" rows={4} />
 								</div>
 								<div className="case-field case-field-wide">
 									<label htmlFor="additionalDetails">Anything else you would like the Doctor to know <span>Optional</span></label>
-									<textarea id="additionalDetails" name="additionalDetails" maxLength={5000} disabled={isBusy} value={fields.additionalDetails} onChange={(event) => updateField("additionalDetails", event.target.value)} placeholder="Add symptoms, timing, questions, or other context" rows={4} />
+									<textarea id="additionalDetails" name="additionalDetails" maxLength={5000} disabled={isBusy || isSubmitted || hasRecoverablePayment} value={fields.additionalDetails} onChange={(event) => updateField("additionalDetails", event.target.value)} placeholder="Add symptoms, timing, questions, or other context" rows={4} />
 								</div>
 							</div>
 							<div className="case-form-actions">
-								{draft && <span className="case-saved-state">Draft {draft.status.toLowerCase()}</span>}
-								<button className="case-button case-button-primary" type="submit" disabled={isBusy}>
+								{draft && <span className="case-saved-state">{isSubmitted ? "Case submitted" : "Draft saved"}</span>}
+								<button className="case-button case-button-primary" type="submit" disabled={isBusy || isSubmitted || hasRecoverablePayment}>
 										{isBusy ? "Saving..." : "Save draft"}
 								</button>
 							</div>
@@ -317,10 +389,10 @@ export default function NewCasePage() {
 								<label className="case-file-picker" htmlFor="case-documents-input">
 									<span className="case-file-symbol" aria-hidden="true">+</span>
 									<span><strong>Choose documents</strong><small>JPEG, PNG, or PDF | up to 5 files | 10 MiB each</small></span>
-									<input key={fileInputVersion} id="case-documents-input" type="file" accept="image/jpeg,image/png,application/pdf" multiple disabled={isBusy} onChange={(event) => setSelectedFiles(Array.from(event.target.files ?? []))} />
+									<input key={fileInputVersion} id="case-documents-input" type="file" accept="image/jpeg,image/png,application/pdf" multiple disabled={isBusy || isSubmitted || hasRecoverablePayment} onChange={(event) => setSelectedFiles(Array.from(event.target.files ?? []))} />
 								</label>
 								{selectedFiles.length > 0 && <p className="case-selection-summary">{selectedFiles.length} file{selectedFiles.length === 1 ? "" : "s"} selected | {selectedFiles.map(({ name }) => name).join(", ")}</p>}
-								<button className="case-button case-button-secondary" type="submit" disabled={isBusy || selectedFiles.length === 0}>
+								<button className="case-button case-button-secondary" type="submit" disabled={isBusy || isSubmitted || hasRecoverablePayment || selectedFiles.length === 0}>
 									{isBusy ? "Working..." : "Upload selected files"}
 								</button>
 							</form>
@@ -333,7 +405,7 @@ export default function NewCasePage() {
 												<span className="case-document-type" aria-hidden="true">{document.contentType === "application/pdf" ? "PDF" : "IMG"}</span>
 												<div><a href={`/api/cases/documents/${document.id}`}>{document.fileName}</a><span>{formatSize(document.sizeBytes)}</span></div>
 											</div>
-											<button className="case-remove-button" type="button" disabled={isBusy} onClick={() => handleDelete(document.id)}>Remove</button>
+											<button className="case-remove-button" type="button" disabled={isBusy || isSubmitted || hasRecoverablePayment} onClick={() => handleDelete(document.id)}>Remove</button>
 										</li>
 									))}
 								</ul>
@@ -358,7 +430,7 @@ export default function NewCasePage() {
 								<p className="case-doctor-state">No verified Doctors are available right now. You can continue without a selection.</p>
 							) : (
 								<form className="case-doctor-form" onSubmit={handleSaveDoctorSelection}>
-									<fieldset className="case-doctor-list" disabled={isBusy || !draft}>
+									<fieldset className="case-doctor-list" disabled={isBusy || !draft || isSubmitted || hasRecoverablePayment}>
 										<legend className="case-visually-hidden">Doctor preference</legend>
 										<label className="case-doctor-option">
 											<input type="radio" name="doctor-preference" checked={selectedDoctorId === null} onChange={() => setSelectedDoctorId(null)} />
@@ -376,22 +448,43 @@ export default function NewCasePage() {
 										<p className="case-doctor-state case-doctor-state-error">Your saved Doctor is no longer available. Clear the preference or choose another verified Doctor.</p>
 									)}
 									<div className="case-doctor-actions">
-										<button className="case-button case-button-secondary" type="submit" disabled={isBusy || !draft}>
+										<button className="case-button case-button-secondary" type="submit" disabled={isBusy || !draft || isSubmitted || hasRecoverablePayment}>
 											{isBusy ? "Saving..." : "Save preference"}
 										</button>
 									</div>
 								</form>
 							)}
-							{draft?.selectedDoctorId && <button className="case-remove-button case-doctor-clear" type="button" disabled={isBusy} onClick={() => void persistDoctorSelection(null)}>Clear selection</button>}
+							{draft?.selectedDoctorId && <button className="case-remove-button case-doctor-clear" type="button" disabled={isBusy || isSubmitted || hasRecoverablePayment} onClick={() => void persistDoctorSelection(null)}>Clear selection</button>}
 						</section>
 
-						<section className="case-next-step" aria-labelledby="case-next-step-heading">
-							<div>
-								<p className="case-next-step-label">DRAFT CHECK</p>
-								<h2 id="case-next-step-heading">{draft && draft.documents.length > 0 ? "Your draft has its required supporting document." : "One document is needed before you continue."}</h2>
-								<p>Your draft stays private and is not visible to Doctors while it is incomplete.</p>
+						<section className="case-next-step case-checkout" aria-labelledby="case-next-step-heading">
+							<div className="case-checkout-details">
+								<p className="case-next-step-label">{isSubmitted ? "SUBMITTED" : "04 / REVIEW & PAYMENT"}</p>
+								<h2 id="case-next-step-heading">{isSubmitted ? "Your Case is submitted." : draft?.documents.length ? "Choose a review speed." : "Upload a document to continue."}</h2>
+								<p>{isSubmitted
+									? `Captured fee: ₹${draft.chargedAmount ?? "0.00"}. Your submitted urgency cannot be changed.`
+									: hasRecoverablePayment
+										? `A payment attempt for ₹${draft?.chargedAmount ?? "0.00"} is being recovered. Retry uses the same attempt and will not create a second charge.`
+										: "Standard and Urgent fees are set by the platform and captured when your Case is submitted."}</p>
+								<fieldset className="case-urgency-options" disabled={isBusy || isSubmitted || hasRecoverablePayment || !paymentOptions}>
+									<legend>Review speed</legend>
+									<label>
+										<input type="radio" name="urgency-tier" checked={urgencyTier === "Standard"} onChange={() => setUrgencyTier("Standard")} />
+										<span><strong>Standard</strong><small>₹{paymentOptions?.standardCaseFee ?? "—"}</small></span>
+									</label>
+									<label>
+										<input type="radio" name="urgency-tier" checked={urgencyTier === "Urgent"} onChange={() => setUrgencyTier("Urgent")} />
+										<span><strong>Urgent</strong><small>₹{paymentOptions?.urgentCaseFee ?? "—"}</small></span>
+									</label>
+								</fieldset>
+								<p className="case-payment-note">Urgent means expedited written review, not emergency care. V1 uses a mock provider; no real payment is collected.</p>
 							</div>
-							<button className="case-button case-button-dark" type="button" disabled={isBusy || !draft} onClick={handleReadiness}>Check readiness</button>
+							<div className="case-checkout-action">
+								<button className="case-button case-button-dark" type="button" disabled={isBusy || isSubmitted || !draft || draft.documents.length === 0 || !selectedFee} onClick={() => void handleSubmitCase()}>
+									{isSubmitted ? "Submitted" : isBusy ? "Submitting..." : hasRecoverablePayment ? `Complete submission (₹${selectedFee})` : selectedFee ? `Pay ₹${selectedFee} and submit` : "Loading fees..."}
+								</button>
+								<p>{draft?.documents.length ? "Your draft stays private until payment succeeds." : "At least one supporting document is required."}</p>
+							</div>
 						</section>
 					</>
 				)}

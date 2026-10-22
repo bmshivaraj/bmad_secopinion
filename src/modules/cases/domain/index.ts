@@ -1,4 +1,9 @@
 import { DomainError } from "../../../shared/api-envelope";
+import type { Prisma } from "../../../generated/prisma/client";
+import type { CaseStatus } from "./case-state-machine";
+
+export { CASE_STATUSES, CASE_STATUS_TRANSITIONS, canTransitionCase } from "./case-state-machine";
+export type { CaseStatus } from "./case-state-machine";
 
 export interface CaseDocumentRecord {
 	id: string;
@@ -13,12 +18,15 @@ export interface CaseDocumentRecord {
 export interface CaseRecord {
 	id: string;
 	patientId: string;
+	doctorId: string | null;
 	affectedBodyArea: string;
 	condition: string;
 	recommendation: string;
 	additionalDetails: string;
 	selectedDoctorId: string | null;
-	status: "Draft";
+	urgencyTier: "Standard" | "Urgent" | null;
+	chargedAmount: Prisma.Decimal | null;
+	status: CaseStatus;
 	createdAt: Date;
 	updatedAt: Date;
 	documents: CaseDocumentRecord[];
@@ -74,6 +82,14 @@ export class CaseDoctorSelectionConflictError extends DomainError {
 
 	constructor() {
 		super("The selected Doctor is not verified or available. Choose another Doctor or continue without a preference.");
+	}
+}
+
+export class CaseSubmissionConflictError extends DomainError {
+	readonly code = "CASE_SUBMISSION_CONFLICT";
+
+	constructor() {
+		super("This Case can no longer be submitted with those selections.");
 	}
 }
 

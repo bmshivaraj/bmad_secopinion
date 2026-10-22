@@ -26,8 +26,30 @@ enum DoctorVerificationStatus {
 
 enum CaseStatus {
   Draft
+  Submitted
+  UnderReview
+  MoreInfoRequested
+  OpinionGiven
+  Closed
+  RefundPending
+  Refunded
 
   @@map("case_status")
+}
+
+enum UrgencyTier {
+  Standard
+  Urgent
+
+  @@map("urgency_tier")
+}
+
+enum PaymentAttemptStatus {
+  Pending
+  Failed
+  Succeeded
+
+  @@map("payment_attempt_status")
 }
 
 // Admin-extensible reference table (AD-15). Doctor.specialties (added in a later story)
@@ -128,11 +150,14 @@ model Case {
   id                 String       @id @default(uuid())
   creationRequestId  String       @unique @map("creation_request_id")
   patientId          String       @map("patient_id")
+  doctorId           String?      @map("doctor_id")
   affectedBodyArea   String       @map("affected_body_area")
   condition          String
   recommendation     String
   additionalDetails String       @default("") @map("additional_details")
   selectedDoctorId  String?      @map("selected_doctor_id")
+  urgencyTier       UrgencyTier? @map("urgency_tier")
+  chargedAmount     Decimal?     @map("charged_amount") @db.Decimal(10, 2)
   status             CaseStatus   @default(Draft)
   documents          CaseDocument[]
   createdAt          DateTime     @default(now()) @map("created_at")
@@ -154,4 +179,21 @@ model CaseDocument {
 
   @@index([caseId, createdAt])
   @@map("case_documents")
+}
+
+model PaymentAttempt {
+  id               String               @id @default(uuid())
+  caseId           String               @unique @map("case_id")
+  patientId        String               @map("patient_id")
+  urgencyTier      UrgencyTier          @map("urgency_tier")
+  chargedAmount    Decimal              @map("charged_amount") @db.Decimal(10, 2)
+  selectedDoctorId String?              @map("selected_doctor_id")
+  idempotencyKey   String               @unique @map("idempotency_key")
+  transactionId   String?              @map("transaction_id")
+  status           PaymentAttemptStatus @default(Pending)
+  providerError    String?              @map("provider_error")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+
+  @@map("payment_attempts")
 }

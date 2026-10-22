@@ -1,7 +1,7 @@
 import argon2 from "argon2";
 import { signAuthToken, type AuthContext } from "../../shared/auth-context";
 import { doctorsService } from "../doctors/service";
-import { AdminAccessDeniedError, AdminInvalidCredentialsError } from "./domain";
+import { AdminAccessDeniedError, AdminInvalidCredentialsError, PlatformSettingsUnavailableError } from "./domain";
 import { adminRepository } from "./repository";
 
 const MAX_PASSWORD_LENGTH = 1024;
@@ -9,7 +9,7 @@ const MAX_LOGIN_FAILURES = 20;
 const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const DUMMY_PASSWORD_HASH = argon2.hash("secopinion-invalid-admin-dummy", { type: argon2.argon2id });
 
-type AdminRepository = Pick<typeof adminRepository, "findByUsername">;
+type AdminRepository = Pick<typeof adminRepository, "findByUsername"> & Partial<Pick<typeof adminRepository, "getPlatformSettings">>;
 type ReviewDoctorsService = Pick<
 	typeof doctorsService,
 	"listPendingApplications" | "setVerificationStatus" | "listActiveSpecialties" | "createSpecialty"
@@ -95,6 +95,15 @@ export function createAdminService(
 		async addSpecialty(caller: AuthContext, name: string) {
 			assertAdmin(caller);
 			return doctors.createSpecialty(name);
+		},
+
+		async getPlatformSettings() {
+			const settings = await repository.getPlatformSettings?.();
+			if (!settings) throw new PlatformSettingsUnavailableError();
+			return {
+				standardCaseFee: settings.standardCaseFee,
+				urgentCaseFee: settings.urgentCaseFee,
+			};
 		},
 
 		async decideApplication(

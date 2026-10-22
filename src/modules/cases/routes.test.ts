@@ -6,13 +6,19 @@ process.env.JWT_SECRET ??= "cases-route-test-secret";
 
 const {
 	parseCaseDocumentUploads,
+	parseCaseClassificationRequest,
 	parseCaseDraftRequest,
 	parseCaseSubmissionRequest,
 	parseDoctorSelectionRequest,
 	requireDocumentReaderContext,
+	requireDoctorContext,
 	requirePatientContext,
 } = await import("./routes");
 const { GET: getDocumentRoute } = await import("../../app/api/cases/documents/[documentId]/route");
+const { GET: getUnclassifiedCasesRoute } = await import("../../app/api/cases/unclassified/route");
+const { PATCH: patchCaseSpecialtyRoute } = await import("../../app/api/cases/[caseId]/specialty/route");
+const { GET: getDoctorQueueRoute } = await import("../../app/api/doctors/queue/route");
+const { GET: getDoctorCaseRoute } = await import("../../app/api/doctors/queue/[caseId]/route");
 const { GET: getDoctorDirectoryRoute } = await import("../../app/api/cases/doctors/route");
 const { PATCH: patchDoctorSelectionRoute } = await import("../../app/api/cases/[caseId]/selection/route");
 const { POST: postCaseSubmitRoute } = await import("../../app/api/cases/[caseId]/submit/route");
@@ -43,6 +49,114 @@ test("draft parser accepts the approved fields and rejects malformed JSON shapes
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ selectedDoctorId: " " }),
 	})), { code: "VALIDATION_ERROR" });
+	assert.deepEqual(await parseCaseClassificationRequest(new Request("http://localhost", {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ specialtyId: " specialty-cardio " }),
+	})), { specialtyId: "specialty-cardio" });
+	await assert.rejects(parseCaseClassificationRequest(new Request("http://localhost", {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ specialtyId: " " }),
+	})), { code: "VALIDATION_ERROR" });
+});
+
+test("classification and Doctor queue routes use role sessions and private envelopes", async () => {
+	const originals = {
+		listUnclassifiedSubmittedCases: casesService.listUnclassifiedSubmittedCases,
+		classifySubmittedCase: casesService.classifySubmittedCase,
+		listDoctorQueue: casesService.listDoctorQueue,
+		getDoctorCase: casesService.getDoctorCase,
+	};
+	let classifiedBy = "";
+	casesService.listUnclassifiedSubmittedCases = async () => [{
+		id: "case-unclassified",
+		affectedBodyArea: "Knee",
+		condition: "Pain",
+		recommendation: "Review",
+		additionalDetails: "",
+		urgencyTier: "Urgent",
+		doctorId: null,
+		assignedDoctorName: null,
+		documents: [],
+		submittedAt: "2026-10-22T12:00:00.000Z",
+	}];
+	casesService.classifySubmittedCase = async (caller, caseId, specialtyId) => {
+		classifiedBy = caller.userId;
+		return { id: caseId, specialtyId, doctorId: null, selectedDoctorId: null, submittedAt: "2026-10-22T12:00:00.000Z" };
+	};
+	casesService.listDoctorQueue = async () => [{
+		id: "case-1",
+		affectedBodyArea: "Knee",
+		condition: "Pain",
+		recommendation: "Review",
+		additionalDetails: "",
+		specialtyId: "specialty-cardio",
+		urgencyTier: "Urgent",
+		status: "Submitted",
+		doctorId: null,
+		submittedAt: "2026-10-22T12:00:00.000Z",
+		elapsedSlaMs: 1000,
+		remainingSlaMs: 431999000,
+	}];
+	casesService.getDoctorCase = async () => ({
+		id: "case-1",
+		affectedBodyArea: "Knee",
+		condition: "Pain",
+		recommendation: "Review",
+		additionalDetails: "",
+		specialtyId: "specialty-cardio",
+		urgencyTier: "Urgent",
+		status: "Submitted",
+		doctorId: "doctor-1",
+		submittedAt: "2026-10-22T12:00:00.000Z",
+		elapsedSlaMs: 1000,
+		remainingSlaMs: 431999000,
+		documents: [],
+	});
+	try {
+		const adminToken = signAuthToken({ userId: "admin-1", role: "admin" });
+		const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
+		const unclassified = await getUnclassifiedCasesRoute(new Request("http://localhost/api/cases/unclassified", {
+			headers: { cookie: `admin_session=${adminToken}` },
+		}));
+		assert.equal(unclassified.status, 200);
+		assert.equal(unclassified.headers.get("cache-control"), "private, no-store");
+		assert.equal((await unclassified.json() as { data: { id: string }[] }).data[0].id, "case-unclassified");
+
+		const classification = await patchCaseSpecialtyRoute(new Request("http://localhost/api/cases/case-unclassified/specialty", {
+			method: "PATCH",
+			headers: { cookie: `admin_session=${adminToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ specialtyId: "specialty-cardio" }),
+		}), { params: Promise.resolve({ caseId: "case-unclassified" }) });
+		assert.equal(classification.status, 200);
+		assert.equal(classifiedBy, "admin-1");
+		assert.equal(classification.headers.get("cache-control"), "private, no-store");
+
+		const queue = await getDoctorQueueRoute(new Request("http://localhost/api/doctors/queue", {
+			headers: { cookie: `doctor_session=${doctorToken}` },
+		}));
+		assert.equal(queue.status, 200);
+		assert.equal(queue.headers.get("cache-control"), "private, no-store");
+		assert.equal((await queue.json() as { data: { id: string }[] }).data[0].id, "case-1");
+		const detail = await getDoctorCaseRoute(new Request("http://localhost/api/doctors/queue/case-1", {
+			headers: { cookie: `doctor_session=${doctorToken}` },
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(detail.status, 200);
+		assert.equal((await detail.json() as { data: { id: string } }).data.id, "case-1");
+
+		const unauthorized = await getDoctorQueueRoute(new Request("http://localhost/api/doctors/queue"));
+		assert.equal(unauthorized.status, 401);
+		const patientToken = signAuthToken({ userId: "patient-1", role: "patient" });
+		const nonAdmin = await patchCaseSpecialtyRoute(new Request("http://localhost/api/cases/case-1/specialty", {
+			method: "PATCH",
+			headers: { cookie: `admin_session=${patientToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ specialtyId: "specialty-cardio" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(nonAdmin.status, 403);
+	} finally {
+		Object.assign(casesService, originals);
+	}
 });
 
 test("Doctor directory and draft selection routes require Patient auth and return private envelopes", async () => {
@@ -187,7 +301,7 @@ test("multipart parser rejects requests over 50 MiB and accepts an actual body a
 	})), { code: "UPLOAD_TOO_LARGE" });
 });
 
-test("Patient draft routes require a verified Patient session; document reads admit Patient or Admin only", () => {
+test("Patient draft routes require Patient auth; document reads admit Patient, Doctor, or Admin sessions", () => {
 	const patientToken = signAuthToken({ userId: "patient-1", role: "patient" });
 	const adminToken = signAuthToken({ userId: "admin-1", role: "admin" });
 	const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
@@ -199,7 +313,8 @@ test("Patient draft routes require a verified Patient session; document reads ad
 	const adminRequest = new Request("http://localhost", { headers: { cookie: `admin_session=${adminToken}` } });
 	assert.deepEqual(requireDocumentReaderContext(adminRequest), { userId: "admin-1", role: "admin" });
 	const doctorRequest = new Request("http://localhost", { headers: { cookie: `doctor_session=${doctorToken}` } });
-	assert.throws(() => requireDocumentReaderContext(doctorRequest), { code: "SESSION_UNAUTHORIZED" });
+	assert.deepEqual(requireDoctorContext(doctorRequest), { userId: "doctor-1", role: "doctor" });
+	assert.deepEqual(requireDocumentReaderContext(doctorRequest), { userId: "doctor-1", role: "doctor" });
 });
 
 test("document GET route returns private attachment headers and denies unauthorized roles", async () => {
@@ -224,7 +339,7 @@ test("document GET route returns private attachment headers and denies unauthori
 		const denied = await getDocumentRoute(new Request("http://localhost/api/cases/documents/doc-1", {
 			headers: { cookie: `doctor_session=${doctorToken}` },
 		}), { params: Promise.resolve({ documentId: "doc-1" }) });
-		assert.equal(denied.status, 401);
+		assert.equal(denied.status, 403);
 	} finally {
 		casesService.getDocument = originalGetDocument;
 	}

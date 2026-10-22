@@ -147,23 +147,29 @@ model Patient {
 }
 
 model Case {
-  id                 String       @id @default(uuid())
-  creationRequestId  String       @unique @map("creation_request_id")
-  patientId          String       @map("patient_id")
-  doctorId           String?      @map("doctor_id")
-  affectedBodyArea   String       @map("affected_body_area")
-  condition          String
-  recommendation     String
-  additionalDetails String       @default("") @map("additional_details")
-  selectedDoctorId  String?      @map("selected_doctor_id")
-  urgencyTier       UrgencyTier? @map("urgency_tier")
-  chargedAmount     Decimal?     @map("charged_amount") @db.Decimal(10, 2)
-  status             CaseStatus   @default(Draft)
-  documents          CaseDocument[]
-  createdAt          DateTime     @default(now()) @map("created_at")
-  updatedAt          DateTime     @updatedAt @map("updated_at")
+  id                    String       @id @default(uuid())
+  creationRequestId     String       @unique @map("creation_request_id")
+  patientId             String       @map("patient_id")
+  doctorId              String?      @map("doctor_id")
+  affectedBodyArea      String       @map("affected_body_area")
+  condition             String
+  recommendation        String
+  additionalDetails     String       @default("") @map("additional_details")
+  selectedDoctorId      String?      @map("selected_doctor_id")
+  specialtyId           String?      @map("specialty_id")
+  urgencyTier           UrgencyTier? @map("urgency_tier")
+  chargedAmount         Decimal?     @map("charged_amount") @db.Decimal(10, 2)
+  status                CaseStatus   @default(Draft)
+  submittedAt           DateTime?    @map("submitted_at")
+  slaPauseHistory       Json         @default("[]") @map("sla_pause_history")
+  assignmentLockVersion Int          @default(0) @map("assignment_lock_version")
+  documents             CaseDocument[]
+  createdAt             DateTime     @default(now()) @map("created_at")
+  updatedAt             DateTime     @updatedAt @map("updated_at")
 
   @@index([patientId, status, updatedAt])
+  @@index([specialtyId, status, urgencyTier, submittedAt])
+  @@index([doctorId, status])
   @@map("cases")
 }
 

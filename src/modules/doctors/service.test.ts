@@ -98,8 +98,9 @@ test("Specialty repository creates active rows and lists only active names alpha
 test("verified Doctor directory repository filters status and selects only patient-facing fields", async () => {
   const doctorDelegate = prisma.doctor as unknown as {
     findMany: (args: unknown) => Promise<{ id: string; fullName: string; specialties: { specialty: { name: string } }[] }[]>;
+    findFirst: (args: unknown) => Promise<{ specialties: { specialtyId: string }[] } | null>;
   };
-  const originalFindMany = doctorDelegate.findMany;
+  const originals = { findFirst: doctorDelegate.findFirst, findMany: doctorDelegate.findMany };
   let query: unknown;
   doctorDelegate.findMany = async (args) => {
     query = args;
@@ -111,6 +112,17 @@ test("verified Doctor directory repository filters status and selects only patie
   };
 
   try {
+    let specialtyQuery: unknown;
+    doctorDelegate.findFirst = async (args) => {
+      specialtyQuery = args;
+      return { specialties: [{ specialtyId: "specialty-cardio" }] };
+    };
+    assert.deepEqual(await doctorsRepository.findVerifiedDoctorSpecialtyIds("doctor-1"), ["specialty-cardio"]);
+    assert.deepEqual(specialtyQuery, {
+      where: { id: "doctor-1", verificationStatus: "Verified" },
+      select: { specialties: { select: { specialtyId: true } } },
+    });
+
     assert.deepEqual(await doctorsRepository.listVerifiedDoctors(), [{
       id: "doctor-1",
       fullName: "Dr. Visible",
@@ -126,7 +138,7 @@ test("verified Doctor directory repository filters status and selects only patie
       orderBy: { fullName: "asc" },
     });
   } finally {
-    doctorDelegate.findMany = originalFindMany;
+    Object.assign(doctorDelegate, originals);
   }
 });
 
@@ -152,6 +164,11 @@ function createFixture(options: {
     },
     async findById(doctorId: string): Promise<DoctorAccount | null> {
       return [...applications.values()].find((doctor) => doctor.id === doctorId) ?? null;
+    },
+    async findVerifiedDoctorSpecialtyIds(doctorId: string): Promise<string[] | null> {
+      const doctor = applications.get(doctorId);
+      if (!doctor || doctor.verificationStatus !== "Verified") return null;
+      return doctor.specialties.map(({ id }) => id);
     },
     async listVerifiedDoctors() {
       return [...applications.values()]

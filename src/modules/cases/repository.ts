@@ -50,10 +50,11 @@ export const casesRepository = {
 		urgencyTier: "Standard" | "Urgent",
 		chargedAmount: Prisma.Decimal,
 		doctorId: string | null,
+		submittedAt: Date,
 	): Promise<CaseRecord | null> {
 		const updated = await prisma.case.updateMany({
 			where: { id: caseId, patientId, status: "Draft" },
-			data: { status: "Submitted", urgencyTier, chargedAmount, doctorId, selectedDoctorId: doctorId },
+			data: { status: "Submitted", urgencyTier, chargedAmount, doctorId, selectedDoctorId: doctorId, submittedAt },
 		});
 		if (updated.count === 0) return null;
 		return prisma.case.findUnique({ where: { id: caseId }, include: draftInclude });
@@ -61,6 +62,54 @@ export const casesRepository = {
 
 	async findById(caseId: string): Promise<CaseRecord | null> {
 		return prisma.case.findUnique({ where: { id: caseId }, include: draftInclude });
+	},
+
+	async listUnclassifiedSubmittedCases(): Promise<CaseRecord[]> {
+		return prisma.case.findMany({
+			where: { status: "Submitted", specialtyId: null },
+			orderBy: { submittedAt: "asc" },
+			include: draftInclude,
+		});
+	},
+
+	async listDoctorQueue(specialtyIds: string[], doctorId: string): Promise<CaseRecord[]> {
+		if (specialtyIds.length === 0) return [];
+		return prisma.case.findMany({
+			where: {
+				specialtyId: { in: specialtyIds },
+				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+				submittedAt: { not: null },
+				OR: [{ doctorId: null }, { doctorId }],
+			},
+			include: draftInclude,
+		});
+	},
+
+	async classifySubmittedCase(caseId: string, specialtyId: string, expectedVersion: number, clearDoctorAssignment: boolean): Promise<CaseRecord | null> {
+		const updated = await prisma.case.updateMany({
+			where: { id: caseId, status: "Submitted", specialtyId: null, assignmentLockVersion: expectedVersion },
+			data: {
+				specialtyId,
+				...(clearDoctorAssignment ? { doctorId: null } : {}),
+				assignmentLockVersion: { increment: 1 },
+			},
+		});
+		if (updated.count === 0) return null;
+		return prisma.case.findUnique({ where: { id: caseId }, include: draftInclude });
+	},
+
+	async findDoctorVisibleCase(caseId: string, specialtyIds: string[], doctorId: string): Promise<CaseRecord | null> {
+		if (specialtyIds.length === 0) return null;
+		return prisma.case.findFirst({
+			where: {
+				id: caseId,
+				specialtyId: { in: specialtyIds },
+				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+				submittedAt: { not: null },
+				OR: [{ doctorId: null }, { doctorId }],
+			},
+			include: draftInclude,
+		});
 	},
 
 	async createDocuments(
@@ -80,7 +129,7 @@ export const casesRepository = {
 	async findDocumentById(documentId: string) {
 		return prisma.caseDocument.findUnique({
 			where: { id: documentId },
-			include: { case: { select: { patientId: true } } },
+			include: { case: { select: { patientId: true, doctorId: true, specialtyId: true } } },
 		});
 	},
 

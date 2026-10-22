@@ -11,6 +11,7 @@ interface ApiResult {
 export default function DoctorLoginPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [verificationStatus, setVerificationStatus] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -30,6 +31,7 @@ export default function DoctorLoginPage() {
         setError(result.error?.message ?? "Unable to sign in. Please try again.");
         return;
       }
+      setVerificationStatus(result.data.verificationStatus);
       setNotice(`Signed in. Verification status: ${result.data.verificationStatus}.`);
     } catch {
       setError("Unable to connect. Please try again.");
@@ -61,7 +63,7 @@ export default function DoctorLoginPage() {
           <p className="auth-eyebrow">Doctor account</p>
           <h2>Welcome back</h2>
           <p className="auth-intro">Sign in with your Doctor username and password.</p>
-          {notice && <p className="auth-success" role="status">{notice} <Link href="/doctors/profile">Manage payout details</Link></p>}
+          {notice && <p className="auth-success" role="status">{notice} {verificationStatus === "Verified" && <Link href="/doctors/queue">Open Case queue</Link>} <Link href="/doctors/profile">Manage payout details</Link></p>}
           <form className="auth-form" onSubmit={handleSubmit}>
             <div className="field-group">
               <label htmlFor="username">Username</label>

@@ -19,6 +19,7 @@ export interface CaseRecord {
 	id: string;
 	patientId: string;
 	doctorId: string | null;
+	specialtyId: string | null;
 	affectedBodyArea: string;
 	condition: string;
 	recommendation: string;
@@ -27,6 +28,9 @@ export interface CaseRecord {
 	urgencyTier: "Standard" | "Urgent" | null;
 	chargedAmount: Prisma.Decimal | null;
 	status: CaseStatus;
+	submittedAt: Date | null;
+	slaPauseHistory: Prisma.JsonValue;
+	assignmentLockVersion: number;
 	createdAt: Date;
 	updatedAt: Date;
 	documents: CaseDocumentRecord[];
@@ -58,6 +62,30 @@ export class CaseSessionUnauthorizedError extends DomainError {
 
 	constructor() {
 		super("A valid Patient session is required.");
+	}
+}
+
+export class CaseAdminAccessDeniedError extends DomainError {
+	readonly code = "CASE_ADMIN_ACCESS_DENIED";
+
+	constructor() {
+		super("An Admin session is required to classify Cases.");
+	}
+}
+
+export class CaseDoctorAccessDeniedError extends DomainError {
+	readonly code = "CASE_DOCTOR_ACCESS_DENIED";
+
+	constructor() {
+		super("A currently Verified Doctor session is required to access the queue.");
+	}
+}
+
+export class CaseClassificationConflictError extends DomainError {
+	readonly code = "CASE_CLASSIFICATION_CONFLICT";
+
+	constructor() {
+		super("This Case was changed or is no longer available for classification.");
 	}
 }
 

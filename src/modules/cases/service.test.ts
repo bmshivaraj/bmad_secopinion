@@ -14,11 +14,13 @@ const { createCasesService } = await import("./service");
 const { casesRepository } = await import("./repository");
 const { prisma } = await import("../../shared/prisma-client");
 const { PaymentDeclinedError } = await import("../payments/domain");
+const { CASE_RESPONSE_SLA_MS, computeElapsedSlaTime } = await import("./domain/sla");
 
 const PATIENT: AuthContext = { userId: "patient-a", role: "patient" };
 const OTHER_PATIENT: AuthContext = { userId: "patient-b", role: "patient" };
 const ADMIN: AuthContext = { userId: "admin-a", role: "admin" };
 const DOCTOR: AuthContext = { userId: "doctor-a", role: "doctor" };
+const VERIFIED_DOCTOR: AuthContext = { userId: "doctor-verified", role: "doctor" };
 
 const VALID_INPUT: CaseDraftInput = {
 	affectedBodyArea: "Left knee",
@@ -62,7 +64,7 @@ function createFixture(options: {
 			if (requestCases.has(creationRequestId)) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
 			const now = new Date();
 			const record: CaseRecord = {
-				id: randomUUID(), patientId, doctorId: null, ...input, selectedDoctorId: null, urgencyTier: null, chargedAmount: null, status: "Draft", documents: [], createdAt: now, updatedAt: now,
+				id: randomUUID(), patientId, doctorId: null, specialtyId: null, ...input, selectedDoctorId: null, urgencyTier: null, chargedAmount: null, status: "Draft", submittedAt: null, slaPauseHistory: [], assignmentLockVersion: 0, documents: [], createdAt: now, updatedAt: now,
 			};
 			cases.set(record.id, record);
 			requestCases.set(creationRequestId, record.id);
@@ -96,16 +98,45 @@ function createFixture(options: {
 			urgencyTier: "Standard" | "Urgent",
 			chargedAmount: CaseRecord["chargedAmount"] & {},
 			doctorId: string | null,
+			submittedAt: Date,
 		): Promise<CaseRecord | null> {
 			if (failSubmissionPersistence) throw new Error("case submission persistence failed");
 			const record = cases.get(caseId);
 			if (!record || record.patientId !== patientId || record.status !== "Draft" || !chargedAmount) return null;
-			const updated = { ...record, urgencyTier, chargedAmount, doctorId, selectedDoctorId: doctorId, status: "Submitted" as const, updatedAt: new Date() };
+			const updated = { ...record, urgencyTier, chargedAmount, doctorId, selectedDoctorId: doctorId, status: "Submitted" as const, submittedAt, updatedAt: new Date() };
 			cases.set(caseId, updated);
 			return updated;
 		},
 		async findById(caseId: string): Promise<CaseRecord | null> {
 			return cases.get(caseId) ?? null;
+		},
+		async listUnclassifiedSubmittedCases(): Promise<CaseRecord[]> {
+			return [...cases.values()].filter((record) => record.status === "Submitted" && record.specialtyId === null);
+		},
+		async listDoctorQueue(specialtyIds: string[], doctorId: string): Promise<CaseRecord[]> {
+			return [...cases.values()].filter((record) => specialtyIds.includes(record.specialtyId ?? "")
+				&& ["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)
+				&& record.submittedAt !== null
+				&& (record.doctorId === null || record.doctorId === doctorId));
+		},
+		async classifySubmittedCase(caseId: string, specialtyId: string, expectedVersion: number, clearDoctorAssignment: boolean): Promise<CaseRecord | null> {
+			const record = cases.get(caseId);
+			if (!record || record.status !== "Submitted" || record.specialtyId !== null || record.assignmentLockVersion !== expectedVersion) return null;
+			const updated = {
+				...record,
+				specialtyId,
+				doctorId: clearDoctorAssignment ? null : record.doctorId,
+				assignmentLockVersion: record.assignmentLockVersion + 1,
+			};
+			cases.set(caseId, updated);
+			return updated;
+		},
+		async findDoctorVisibleCase(caseId: string, specialtyIds: string[], doctorId: string): Promise<CaseRecord | null> {
+			const record = cases.get(caseId);
+			return record && specialtyIds.includes(record.specialtyId ?? "")
+				&& ["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)
+				&& record.submittedAt !== null
+				&& (record.doctorId === null || record.doctorId === doctorId) ? record : null;
 		},
 		async createDocuments(caseId: string, newDocuments: Omit<CaseDocumentRecord, "id" | "caseId" | "createdAt">[]): Promise<CaseDocumentRecord[]> {
 			if (options.failDocumentPersistence) throw new Error("document persistence failed");
@@ -120,7 +151,10 @@ function createFixture(options: {
 		async findDocumentById(documentId: string) {
 			const document = documents.get(documentId);
 			const record = document ? cases.get(document.caseId) : null;
-			return document && record ? { ...document, case: { patientId: record.patientId } } : null;
+			return document && record ? {
+				...document,
+				case: { patientId: record.patientId, doctorId: record.doctorId, specialtyId: record.specialtyId },
+			} : null;
 		},
 		async deleteDocument(documentId: string): Promise<void> {
 			const document = documents.get(documentId);
@@ -175,6 +209,12 @@ function createFixture(options: {
 				updatedAt: now,
 			};
 		},
+		async getVerifiedDoctorSpecialtyIds(doctorId: string): Promise<string[] | null> {
+			return doctorId === "doctor-verified" ? ["specialty-cardiology"] : null;
+		},
+		async listActiveSpecialties() {
+			return [{ id: "specialty-cardiology", name: "Cardiology" }, { id: "specialty-neurology", name: "Neurology" }];
+		},
 	};
 	const admin = {
 		async getPlatformSettings() {
@@ -212,7 +252,7 @@ function createFixture(options: {
 				attempts.set(attempt.caseId, { ...attempt, status: "Failed", providerError: "declined" });
 				throw new PaymentDeclinedError();
 			}
-			const succeeded = { ...attempt, status: "Succeeded" as const, transactionId: randomUUID() };
+			const succeeded = { ...attempt, status: "Succeeded" as const, transactionId: randomUUID(), updatedAt: new Date() };
 			attempts.set(attempt.caseId, succeeded);
 			return succeeded;
 		},
@@ -233,9 +273,129 @@ function createFixture(options: {
 		setFailPayment(value: boolean) { failPayment = value; },
 		setFailSettings(value: boolean) { failSettings = value; },
 		setFees(standard: string, urgent: string) { standardCaseFee = standard; urgentCaseFee = urgent; },
+		repository,
 		service: createCasesService(repository, storage, doctors, admin, payments),
 	};
 }
+
+async function createSubmittedCase(
+	fixture: ReturnType<typeof createFixture>,
+	urgencyTier: "Standard" | "Urgent" = "Standard",
+	doctorId: string | null = null,
+) {
+	const draft = await fixture.service.saveDraft(PATIENT, VALID_INPUT);
+	await fixture.service.uploadDocuments(PATIENT, draft.id, [upload()]);
+	await fixture.service.submitCase(PATIENT, draft.id, urgencyTier, doctorId);
+	return fixture.cases.get(draft.id)!;
+}
+
+test("SLA arithmetic starts at submission, excludes completed and open pauses, and caps at the 120-hour boundary", () => {
+	const submittedAt = new Date("2026-01-01T00:00:00.000Z");
+	const now = new Date(submittedAt.getTime() + CASE_RESPONSE_SLA_MS);
+	const caseRecord = {
+		submittedAt,
+		slaPauseHistory: [
+			{ pausedAt: "2026-01-02T00:00:00.000Z", resumedAt: "2026-01-03T00:00:00.000Z" },
+			{ pausedAt: "2026-01-04T00:00:00.000Z", resumedAt: null },
+		],
+	};
+	assert.equal(computeElapsedSlaTime({ submittedAt, slaPauseHistory: [] }, now), CASE_RESPONSE_SLA_MS);
+	assert.equal(computeElapsedSlaTime(caseRecord, now), 48 * 60 * 60 * 1000);
+	assert.equal(computeElapsedSlaTime({
+		submittedAt,
+		slaPauseHistory: [
+			{ pausedAt: new Date(submittedAt.getTime() + 60 * 60 * 1000).toISOString(), resumedAt: new Date(submittedAt.getTime() + 6 * 60 * 60 * 1000).toISOString() },
+			{ pausedAt: new Date(submittedAt.getTime() + 4 * 60 * 60 * 1000).toISOString(), resumedAt: new Date(submittedAt.getTime() + 8 * 60 * 60 * 1000).toISOString() },
+		],
+	}, new Date(submittedAt.getTime() + 10 * 60 * 60 * 1000)), 3 * 60 * 60 * 1000);
+	assert.equal(computeElapsedSlaTime({ submittedAt: null, slaPauseHistory: [] }, now), null);
+});
+
+test("Admin classification uses an active Specialty and atomically clears only an incompatible assignment", async () => {
+	const fixture = createFixture();
+	const record = await createSubmittedCase(fixture, "Urgent", "doctor-verified");
+	const submittedAt = record.submittedAt;
+	const unclassified = await fixture.service.listUnclassifiedSubmittedCases(ADMIN);
+	assert.equal(unclassified.length, 1);
+	assert.equal(unclassified[0].recommendation, VALID_INPUT.recommendation);
+	assert.equal(unclassified[0].assignedDoctorName, "Dr. Visible");
+	assert.equal(unclassified[0].documents[0].id, record.documents[0].id);
+	await assert.rejects(fixture.service.listUnclassifiedSubmittedCases(DOCTOR), { code: "CASE_ADMIN_ACCESS_DENIED" });
+	await assert.rejects(fixture.service.classifySubmittedCase(ADMIN, record.id, "specialty-inactive"), { code: "VALIDATION_ERROR" });
+
+	const classified = await fixture.service.classifySubmittedCase(ADMIN, record.id, "specialty-neurology");
+	assert.deepEqual(classified, {
+		id: record.id,
+		specialtyId: "specialty-neurology",
+		doctorId: null,
+		selectedDoctorId: "doctor-verified",
+		submittedAt: submittedAt?.toISOString(),
+	});
+	assert.equal(fixture.cases.get(record.id)?.assignmentLockVersion, 1);
+	assert.equal(fixture.cases.get(record.id)?.submittedAt, submittedAt);
+	assert.equal((await fixture.service.listUnclassifiedSubmittedCases(ADMIN)).length, 0);
+	await assert.rejects(fixture.service.classifySubmittedCase(ADMIN, record.id, "specialty-cardiology"), { code: "CASE_CLASSIFICATION_CONFLICT" });
+
+	const compatibleFixture = createFixture();
+	const compatibleRecord = await createSubmittedCase(compatibleFixture, "Urgent", "doctor-verified");
+	const compatible = await compatibleFixture.service.classifySubmittedCase(ADMIN, compatibleRecord.id, "specialty-cardiology");
+	assert.equal(compatible.doctorId, "doctor-verified");
+	assert.equal(compatible.selectedDoctorId, "doctor-verified");
+	assert.equal(compatibleFixture.cases.get(compatibleRecord.id)?.assignmentLockVersion, 1);
+
+	const racedFixture = createFixture();
+	const racedRecord = await createSubmittedCase(racedFixture);
+	racedFixture.repository.classifySubmittedCase = async () => null;
+	await assert.rejects(racedFixture.service.classifySubmittedCase(ADMIN, racedRecord.id, "specialty-cardiology"), { code: "CASE_CLASSIFICATION_CONFLICT" });
+});
+
+test("Doctor queue filters classification, specialty, status, and assignment, with Urgent first and shortest SLA next", async () => {
+	const fixture = createFixture();
+	const urgent = await createSubmittedCase(fixture, "Urgent");
+	const standardDueSoon = await createSubmittedCase(fixture);
+	const standardLater = await createSubmittedCase(fixture);
+	const assignedElsewhere = await createSubmittedCase(fixture);
+	const otherSpecialty = await createSubmittedCase(fixture);
+	const unclassified = await createSubmittedCase(fixture);
+	for (const record of [urgent, standardDueSoon, standardLater, assignedElsewhere]) {
+		await fixture.service.classifySubmittedCase(ADMIN, record.id, "specialty-cardiology");
+	}
+	await fixture.service.classifySubmittedCase(ADMIN, otherSpecialty.id, "specialty-neurology");
+	const now = new Date();
+	fixture.cases.set(standardDueSoon.id, { ...fixture.cases.get(standardDueSoon.id)!, submittedAt: new Date(now.getTime() - 119 * 60 * 60 * 1000) });
+	fixture.cases.set(standardLater.id, { ...fixture.cases.get(standardLater.id)!, submittedAt: new Date(now.getTime() - 30 * 60 * 60 * 1000), status: "UnderReview" });
+	fixture.cases.set(assignedElsewhere.id, { ...fixture.cases.get(assignedElsewhere.id)!, doctorId: "doctor-other" });
+
+	const queue = await fixture.service.listDoctorQueue(VERIFIED_DOCTOR);
+	assert.deepEqual(queue.map(({ id }) => id), [urgent.id, standardDueSoon.id, standardLater.id]);
+	assert.equal(queue[0].urgencyTier, "Urgent");
+	assert.equal(queue[1].remainingSlaMs! < queue[2].remainingSlaMs!, true);
+	assert.equal(queue.some(({ id }) => id === unclassified.id || id === otherSpecialty.id || id === assignedElsewhere.id), false);
+	assert.equal((await fixture.service.getDoctorCase(VERIFIED_DOCTOR, urgent.id)).id, urgent.id);
+	await assert.rejects(fixture.service.listDoctorQueue(DOCTOR), { code: "CASE_DOCTOR_ACCESS_DENIED" });
+	await assert.rejects(fixture.service.getDoctorCase(VERIFIED_DOCTOR, otherSpecialty.id), { code: "CASE_NOT_FOUND" });
+	await assert.rejects(fixture.service.getDoctorCase(VERIFIED_DOCTOR, assignedElsewhere.id), { code: "CASE_NOT_FOUND" });
+	await assert.rejects(fixture.service.getDoctorCase(VERIFIED_DOCTOR, unclassified.id), { code: "CASE_NOT_FOUND" });
+});
+
+test("Doctor Document reads require current verification, matching Specialty, and current assignment before storage", async () => {
+	const fixture = createFixture();
+	const assigned = await createSubmittedCase(fixture, "Standard", "doctor-verified");
+	await fixture.service.classifySubmittedCase(ADMIN, assigned.id, "specialty-cardiology");
+	const assignedDocument = assigned.documents[0];
+	assert.equal(new TextDecoder().decode((await fixture.service.getDocument(assignedDocument.id, VERIFIED_DOCTOR)).bytes), "%PDF-1.7 report");
+	assert.equal(fixture.readCalls, 1);
+
+	const unassigned = await createSubmittedCase(fixture);
+	await fixture.service.classifySubmittedCase(ADMIN, unassigned.id, "specialty-cardiology");
+	await assert.rejects(fixture.service.getDocument(unassigned.documents[0].id, VERIFIED_DOCTOR), { code: "CASE_DOCUMENT_NOT_FOUND" });
+
+	const wrongSpecialty = await createSubmittedCase(fixture);
+	await fixture.service.classifySubmittedCase(ADMIN, wrongSpecialty.id, "specialty-neurology");
+	fixture.cases.set(wrongSpecialty.id, { ...fixture.cases.get(wrongSpecialty.id)!, doctorId: "doctor-verified" });
+	await assert.rejects(fixture.service.getDocument(wrongSpecialty.documents[0].id, VERIFIED_DOCTOR), { code: "CASE_DOCUMENT_NOT_FOUND" });
+	assert.equal(fixture.readCalls, 1);
+});
 
 test("Patient Doctor directory is verified-only and returns only approved display fields", async () => {
 	const fixture = createFixture();
@@ -404,6 +564,8 @@ test("stale Doctor preference blocks charging and confirmed payment recovers Cas
 	const recoverableDraft = await recovery.service.getOwnDraft(PATIENT);
 	assert.equal(recoverableDraft?.paymentAttemptStatus, "Succeeded");
 	assert.equal(recoverableDraft?.chargedAmount, "2000.00");
+	const paymentSucceededAt = recovery.attempts.get(recoveryDraft.id)?.updatedAt;
+	assert.ok(paymentSucceededAt);
 	const recoveryRecord = recovery.cases.get(recoveryDraft.id);
 	assert.ok(recoveryRecord);
 	recovery.cases.set(recoveryDraft.id, { ...recoveryRecord, documents: [] });
@@ -416,6 +578,7 @@ test("stale Doctor preference blocks charging and confirmed payment recovers Cas
 	const finalized = await recovery.service.submitCase(PATIENT, recoveryDraft.id, "Standard");
 	assert.equal(finalized.urgencyTier, "Urgent");
 	assert.equal(finalized.chargedAmount, "2000.00");
+	assert.equal(recovery.cases.get(recoveryDraft.id)?.submittedAt, paymentSucceededAt);
 	assert.equal(recovery.chargeCalls, 1);
 });
 
@@ -456,7 +619,7 @@ test("foreign Patients and Doctors are denied before StorageProvider.read; Patie
 	assert.equal(new TextDecoder().decode((await fixture.service.getDocument(metadata.id, ADMIN)).bytes), "%PDF-1.7 report");
 	assert.equal(fixture.readCalls, 2);
 	await assert.rejects(fixture.service.getDocument(metadata.id, OTHER_PATIENT), { code: "CASE_ACCESS_DENIED" });
-	await assert.rejects(fixture.service.getDocument(metadata.id, DOCTOR), { code: "CASE_ACCESS_DENIED" });
+	await assert.rejects(fixture.service.getDocument(metadata.id, DOCTOR), { code: "CASE_DOCTOR_ACCESS_DENIED" });
 	await assert.rejects(fixture.service.getDocument(randomUUID(), PATIENT), { code: "CASE_DOCUMENT_NOT_FOUND" });
 	assert.equal(fixture.readCalls, 2);
 	assert.ok(document.storageKey);
@@ -572,7 +735,8 @@ test("submission repository conditionally transitions only an owned Draft and st
 	});
 	try {
 		const amount = new Prisma.Decimal("2000.00");
-		const submitted = await casesRepository.updateCaseToSubmitted(caseId, PATIENT.userId, "Urgent", amount, "doctor-verified");
+		const submittedAt = new Date("2026-10-22T12:00:00.000Z");
+		const submitted = await casesRepository.updateCaseToSubmitted(caseId, PATIENT.userId, "Urgent", amount, "doctor-verified", submittedAt);
 		assert.equal(submitted?.status, "Submitted");
 		assert.equal(submitted?.doctorId, "doctor-verified");
 		assert.equal(submitted?.chargedAmount?.toFixed(2), "2000.00");
@@ -580,9 +744,64 @@ test("submission repository conditionally transitions only an owned Draft and st
 		assert.deepEqual(args.where, { id: caseId, patientId: PATIENT.userId, status: "Draft" });
 		assert.equal(args.data.status, "Submitted");
 		assert.equal(args.data.doctorId, "doctor-verified");
+		assert.equal(args.data.submittedAt, submittedAt);
 		assert.equal((args.data.chargedAmount as Prisma.Decimal).toFixed(2), "2000.00");
+		assert.ok(args.data.submittedAt instanceof Date);
 	} finally {
 		caseDelegate.updateMany = originals.updateMany;
 		caseDelegate.findUnique = originals.findUnique;
+	}
+});
+
+test("queue repository enforces active statuses, Specialty membership, and assignment visibility", async () => {
+	const caseDelegate = prisma.case as unknown as {
+		findMany: (args: unknown) => Promise<CaseRecord[]>;
+		findFirst: (args: unknown) => Promise<CaseRecord | null>;
+	};
+	const originals = { findMany: caseDelegate.findMany, findFirst: caseDelegate.findFirst };
+	let queueQuery: unknown;
+	let detailQuery: unknown;
+	caseDelegate.findMany = async (args) => { queueQuery = args; return []; };
+	caseDelegate.findFirst = async (args) => { detailQuery = args; return null; };
+	try {
+		await casesRepository.listDoctorQueue(["specialty-a", "specialty-b"], "doctor-a");
+		const where = {
+			specialtyId: { in: ["specialty-a", "specialty-b"] },
+			status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+			submittedAt: { not: null },
+			OR: [{ doctorId: null }, { doctorId: "doctor-a" }],
+		};
+		assert.deepEqual(queueQuery, { where, include: { documents: { orderBy: { createdAt: "asc" } } } });
+		await casesRepository.findDoctorVisibleCase("case-a", ["specialty-a"], "doctor-a");
+		assert.deepEqual(detailQuery, {
+			where: {
+				id: "case-a",
+				specialtyId: { in: ["specialty-a"] },
+				status: { in: ["Submitted", "UnderReview", "MoreInfoRequested"] },
+				submittedAt: { not: null },
+				OR: [{ doctorId: null }, { doctorId: "doctor-a" }],
+			},
+			include: { documents: { orderBy: { createdAt: "asc" } } },
+		});
+	} finally {
+		Object.assign(caseDelegate, originals);
+	}
+});
+
+test("classification repository uses the expected assignment version and leaves Patient preference untouched", async () => {
+	const caseDelegate = prisma.case as unknown as {
+		updateMany: (args: unknown) => Promise<{ count: number }>;
+	};
+	const originalUpdateMany = caseDelegate.updateMany;
+	let updateArgs: unknown;
+	caseDelegate.updateMany = async (args) => { updateArgs = args; return { count: 0 }; };
+	try {
+		assert.equal(await casesRepository.classifySubmittedCase("case-a", "specialty-neurology", 7, true), null);
+		assert.deepEqual(updateArgs, {
+			where: { id: "case-a", status: "Submitted", specialtyId: null, assignmentLockVersion: 7 },
+			data: { specialtyId: "specialty-neurology", doctorId: null, assignmentLockVersion: { increment: 1 } },
+		});
+	} finally {
+		caseDelegate.updateMany = originalUpdateMany;
 	}
 });

@@ -65,6 +65,7 @@ type DoctorsRepository = Pick<
 	| "findByMobileNumber"
 	| "findByUsername"
 	| "findById"
+	| "findVerifiedDoctorSpecialtyIds"
 	| "listVerifiedDoctors"
 	| "findPayoutProfile"
 	| "updateUpiId"
@@ -447,6 +448,10 @@ export function createDoctorsService(
 				createdAt: doctor.createdAt,
 				updatedAt: doctor.updatedAt,
 			};
+		},
+
+		async getVerifiedDoctorSpecialtyIds(doctorId: string): Promise<string[] | null> {
+			return repository.findVerifiedDoctorSpecialtyIds(doctorId);
 		},
 	};
 }

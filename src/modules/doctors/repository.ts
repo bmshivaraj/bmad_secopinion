@@ -53,6 +53,14 @@ export const doctorsRepository = {
 		return record ? mapAccount(record) : null;
 	},
 
+	async findVerifiedDoctorSpecialtyIds(doctorId: string): Promise<string[] | null> {
+		const record = await prisma.doctor.findFirst({
+			where: { id: doctorId, verificationStatus: "Verified" },
+			select: { specialties: { select: { specialtyId: true } } },
+		});
+		return record?.specialties.map(({ specialtyId }) => specialtyId) ?? null;
+	},
+
 	async listVerifiedDoctors(): Promise<{ id: string; fullName: string; specialties: string[] }[]> {
 		const records = await prisma.doctor.findMany({
 			where: { verificationStatus: "Verified" },

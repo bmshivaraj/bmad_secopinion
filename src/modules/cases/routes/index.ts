@@ -3,6 +3,7 @@ import { DomainError, fail } from "../../../shared/api-envelope";
 import { verifyAuthToken, type AuthContext } from "../../../shared/auth-context";
 import {
 	ADMIN_SESSION_COOKIE,
+	DOCTOR_SESSION_COOKIE,
 	readRequestCookie as readDoctorRequestCookie,
 } from "../../doctors/routes";
 import {
@@ -10,6 +11,7 @@ import {
 	readRequestCookie,
 } from "../../patients/routes";
 import {
+	CaseAdminAccessDeniedError,
 	CaseSessionUnauthorizedError,
 	CaseUploadTooLargeError,
 	InvalidCaseInputError,
@@ -119,6 +121,23 @@ export async function parseCaseSubmissionRequest(request: Request): Promise<{
 	};
 }
 
+export async function parseCaseClassificationRequest(request: Request): Promise<{ specialtyId: string }> {
+	let body: unknown;
+	try {
+		body = await request.json();
+	} catch {
+		throw new InvalidCaseInputError("Request body must be valid JSON.");
+	}
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		throw new InvalidCaseInputError("Request body must be a JSON object.");
+	}
+	const specialtyId = (body as Record<string, unknown>).specialtyId;
+	if (typeof specialtyId !== "string" || !specialtyId.trim()) {
+		throw new InvalidCaseInputError("specialtyId must be a non-empty string.");
+	}
+	return { specialtyId: specialtyId.trim() };
+}
+
 export async function parseCaseDocumentUploads(request: Request): Promise<CaseDocumentUpload[]> {
 	const contentLength = Number(request.headers.get("content-length"));
 	if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_SIZE) {
@@ -173,6 +192,23 @@ export function requirePatientContext(request: Request): AuthContext {
 	return readSession(readRequestCookie(request, PATIENT_SESSION_COOKIE), "patient");
 }
 
+export function requireDoctorContext(request: Request): AuthContext {
+	return readSession(readDoctorRequestCookie(request, DOCTOR_SESSION_COOKIE), "doctor");
+}
+
+export function requireAdminCaseContext(request: Request): AuthContext {
+	const token = readDoctorRequestCookie(request, ADMIN_SESSION_COOKIE);
+	if (!token) throw new CaseSessionUnauthorizedError();
+	let caller: AuthContext;
+	try {
+		caller = verifyAuthToken(token);
+	} catch {
+		throw new CaseSessionUnauthorizedError();
+	}
+	if (caller.role !== "admin") throw new CaseAdminAccessDeniedError();
+	return caller;
+}
+
 export function requireDocumentReaderContext(request: Request): AuthContext {
 	const patientToken = readRequestCookie(request, PATIENT_SESSION_COOKIE);
 	if (patientToken) {
@@ -183,6 +219,15 @@ export function requireDocumentReaderContext(request: Request): AuthContext {
 			// Try the Admin session cookie below; neither cookie is an authorization decision by itself.
 		}
 	}
+	const doctorToken = readDoctorRequestCookie(request, DOCTOR_SESSION_COOKIE);
+	if (doctorToken) {
+		try {
+			const caller = verifyAuthToken(doctorToken);
+			if (caller.role === "doctor") return caller;
+		} catch {
+			// Continue to the Admin session cookie; a cookie is not an authorization decision by itself.
+		}
+	}
 	return readSession(readDoctorRequestCookie(request, ADMIN_SESSION_COOKIE), "admin");
 }
 
@@ -190,7 +235,10 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	VALIDATION_ERROR: 400,
 	SESSION_UNAUTHORIZED: 401,
 	CASE_ACCESS_DENIED: 403,
+	CASE_ADMIN_ACCESS_DENIED: 403,
+	CASE_DOCTOR_ACCESS_DENIED: 403,
 	CASE_NOT_FOUND: 404,
+	CASE_CLASSIFICATION_CONFLICT: 409,
 	CASE_DOCUMENT_NOT_FOUND: 404,
 	CASE_DOCUMENT_REQUIRED: 409,
 	CASE_DOCTOR_SELECTION_CONFLICT: 409,

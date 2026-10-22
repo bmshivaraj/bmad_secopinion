@@ -10,6 +10,9 @@ import type { StorageProvider } from "../../shared/storage-provider";
 import type { Prisma } from "../../generated/prisma/client";
 import {
 	CaseAccessDeniedError,
+	CaseAdminAccessDeniedError,
+	CaseClassificationConflictError,
+	CaseDoctorAccessDeniedError,
 	CaseDoctorSelectionConflictError,
 	CaseDocumentNotFoundError,
 	CaseDocumentRequiredError,
@@ -24,6 +27,7 @@ import {
 	type CaseRecord,
 } from "./domain";
 import { canTransitionCase } from "./domain";
+import { CASE_RESPONSE_SLA_MS, computeElapsedSlaTime } from "./domain/sla";
 import { casesRepository } from "./repository";
 
 const MAX_DOCUMENT_COUNT = 5;
@@ -32,10 +36,15 @@ const ACCEPTED_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "application/
 
 type CasesRepository = Pick<
 	typeof casesRepository,
-	"createDraft" | "findByCreationRequestId" | "findLatestDraft" | "updateDraft" | "updateDraftDoctorSelection" | "updateCaseToSubmitted" | "findById" | "createDocuments" | "findDocumentById" | "deleteDocument"
+	| "createDraft" | "findByCreationRequestId" | "findLatestDraft" | "updateDraft" | "updateDraftDoctorSelection"
+	| "updateCaseToSubmitted" | "findById" | "listUnclassifiedSubmittedCases" | "listDoctorQueue"
+	| "classifySubmittedCase" | "findDoctorVisibleCase" | "createDocuments" | "findDocumentById" | "deleteDocument"
 >;
 
-type DoctorsService = Pick<typeof doctorsService, "listVerifiedDoctors" | "getVerifiedDoctor">;
+type DoctorsService = Pick<
+	typeof doctorsService,
+	"listVerifiedDoctors" | "getVerifiedDoctor" | "getVerifiedDoctorSpecialtyIds" | "listActiveSpecialties"
+>;
 type AdminSettingsService = Pick<typeof adminService, "getPlatformSettings">;
 type PaymentsService = Pick<typeof paymentsService, "findAttemptByCaseId" | "prepareAttempt" | "chargeAttempt">;
 
@@ -117,6 +126,14 @@ function assertPatient(caller: AuthContext): void {
 	if (caller.role !== "patient" || !caller.userId) throw new CaseSessionUnauthorizedError();
 }
 
+function assertAdmin(caller: AuthContext): void {
+	if (caller.role !== "admin") throw new CaseAdminAccessDeniedError();
+}
+
+function assertDoctor(caller: AuthContext): void {
+	if (caller.role !== "doctor" || !caller.userId) throw new CaseDoctorAccessDeniedError();
+}
+
 function publicDocument(document: CaseDocumentRecord) {
 	return {
 		id: document.id,
@@ -148,6 +165,24 @@ function publicDraft(record: CaseRecord) {
 function assertDraftOwner(record: CaseRecord | null, patientId: string): asserts record is CaseRecord {
 	if (!record || record.status !== "Draft") throw new CaseNotFoundError();
 	if (record.patientId !== patientId) throw new CaseAccessDeniedError();
+}
+
+function doctorCaseSummary(record: CaseRecord, now: Date) {
+	const elapsedSlaMs = computeElapsedSlaTime(record, now);
+	return {
+		id: record.id,
+		affectedBodyArea: record.affectedBodyArea,
+		condition: record.condition,
+		recommendation: record.recommendation,
+		additionalDetails: record.additionalDetails,
+		specialtyId: record.specialtyId,
+		urgencyTier: record.urgencyTier,
+		status: record.status,
+		doctorId: record.doctorId,
+		submittedAt: record.submittedAt?.toISOString() ?? null,
+		elapsedSlaMs,
+		remainingSlaMs: elapsedSlaMs === null ? null : Math.max(0, CASE_RESPONSE_SLA_MS - elapsedSlaMs),
+	};
 }
 
 async function assertPaymentReadyFor(repository: CasesRepository, caller: AuthContext, caseId: string) {
@@ -275,9 +310,19 @@ export function createCasesService(
 		},
 
 		async getDocument(documentId: string, caller: AuthContext) {
+			let doctorSpecialtyIds: string[] | null = null;
+			if (caller.role === "doctor") {
+				assertDoctor(caller);
+				doctorSpecialtyIds = await doctors.getVerifiedDoctorSpecialtyIds(caller.userId);
+				if (!doctorSpecialtyIds) throw new CaseDoctorAccessDeniedError();
+			}
 			const document = await repository.findDocumentById(documentId);
 			if (!document) throw new CaseDocumentNotFoundError();
-			if (caller.role !== "admin" && !(caller.role === "patient" && caller.userId === document.case.patientId)) {
+			if (caller.role === "doctor") {
+				if (document.case.doctorId !== caller.userId || !document.case.specialtyId || !doctorSpecialtyIds?.includes(document.case.specialtyId)) {
+					throw new CaseDocumentNotFoundError();
+				}
+			} else if (caller.role !== "admin" && !(caller.role === "patient" && caller.userId === document.case.patientId)) {
 				throw new CaseAccessDeniedError();
 			}
 			const bytes = await storage.read(document.storageKey);
@@ -384,7 +429,7 @@ export function createCasesService(
 			if (!canTransitionCase(record.status, "Submitted")) throw new CaseSubmissionConflictError();
 			let submitted: CaseRecord | null;
 			try {
-				submitted = await repository.updateCaseToSubmitted(caseId, caller.userId, attempt.urgencyTier, attempt.chargedAmount, attempt.selectedDoctorId);
+				submitted = await repository.updateCaseToSubmitted(caseId, caller.userId, attempt.urgencyTier, attempt.chargedAmount, attempt.selectedDoctorId, attempt.updatedAt);
 			} catch {
 				throw new PaymentRecoveryRequiredError();
 			}
@@ -407,6 +452,89 @@ export function createCasesService(
 				chargedAmount: attempt.chargedAmount.toFixed(2),
 				selectedDoctorId: attempt.selectedDoctorId,
 				status: "Submitted" as const,
+			};
+		},
+
+		async listUnclassifiedSubmittedCases(caller: AuthContext) {
+			assertAdmin(caller);
+			const records = await repository.listUnclassifiedSubmittedCases();
+			const assignedDoctorIds = new Set(records.flatMap(({ doctorId }) => doctorId ? [doctorId] : []));
+			const assignedDoctors = assignedDoctorIds.size > 0 ? await doctors.listVerifiedDoctors() : [];
+			const doctorNames = new Map(assignedDoctors
+				.filter(({ id }) => assignedDoctorIds.has(id))
+				.map(({ id, fullName }) => [id, fullName]));
+			return records.map((record) => ({
+					id: record.id,
+					affectedBodyArea: record.affectedBodyArea,
+					condition: record.condition,
+					recommendation: record.recommendation,
+					additionalDetails: record.additionalDetails,
+					urgencyTier: record.urgencyTier,
+					doctorId: record.doctorId,
+					assignedDoctorName: record.doctorId ? doctorNames.get(record.doctorId) ?? null : null,
+					documents: record.documents.map(publicDocument),
+					submittedAt: record.submittedAt?.toISOString() ?? null,
+			}));
+		},
+
+		async classifySubmittedCase(caller: AuthContext, caseId: string, specialtyId: string) {
+			assertAdmin(caller);
+			if (typeof specialtyId !== "string" || !specialtyId.trim()) {
+				throw new InvalidCaseInputError("specialtyId must be a non-empty string.");
+			}
+			const normalizedSpecialtyId = specialtyId.trim();
+			const activeSpecialties = await doctors.listActiveSpecialties();
+			if (!activeSpecialties.some(({ id }) => id === normalizedSpecialtyId)) {
+				throw new InvalidCaseInputError("Select an active Specialty.");
+			}
+			const record = await repository.findById(caseId);
+			if (!record || record.status !== "Submitted" || record.specialtyId !== null) {
+				throw new CaseClassificationConflictError();
+			}
+			let clearDoctorAssignment = false;
+			if (record.doctorId) {
+				const assignedDoctorSpecialties = await doctors.getVerifiedDoctorSpecialtyIds(record.doctorId);
+				clearDoctorAssignment = !assignedDoctorSpecialties?.includes(normalizedSpecialtyId);
+			}
+			const classified = await repository.classifySubmittedCase(
+				caseId,
+				normalizedSpecialtyId,
+				record.assignmentLockVersion,
+				clearDoctorAssignment,
+			);
+			if (!classified) throw new CaseClassificationConflictError();
+			return {
+				id: classified.id,
+				specialtyId: classified.specialtyId,
+				doctorId: classified.doctorId,
+				selectedDoctorId: classified.selectedDoctorId,
+				submittedAt: classified.submittedAt?.toISOString() ?? null,
+			};
+		},
+
+		async listDoctorQueue(caller: AuthContext) {
+			assertDoctor(caller);
+			const specialtyIds = await doctors.getVerifiedDoctorSpecialtyIds(caller.userId);
+			if (!specialtyIds) throw new CaseDoctorAccessDeniedError();
+			const now = new Date();
+			return (await repository.listDoctorQueue(specialtyIds, caller.userId))
+				.map((record) => doctorCaseSummary(record, now))
+				.filter((record) => record.remainingSlaMs !== null)
+				.sort((left, right) => {
+					const urgencyOrder = Number(right.urgencyTier === "Urgent") - Number(left.urgencyTier === "Urgent");
+					return urgencyOrder || (left.remainingSlaMs ?? 0) - (right.remainingSlaMs ?? 0);
+				});
+		},
+
+		async getDoctorCase(caller: AuthContext, caseId: string) {
+			assertDoctor(caller);
+			const specialtyIds = await doctors.getVerifiedDoctorSpecialtyIds(caller.userId);
+			if (!specialtyIds) throw new CaseDoctorAccessDeniedError();
+			const record = await repository.findDoctorVisibleCase(caseId, specialtyIds, caller.userId);
+			if (!record) throw new CaseNotFoundError();
+			return {
+				...doctorCaseSummary(record, new Date()),
+				documents: record.doctorId === caller.userId ? record.documents.map(publicDocument) : [],
 			};
 		},
 	};

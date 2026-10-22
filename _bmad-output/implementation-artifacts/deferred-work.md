@@ -101,3 +101,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-3-2-optional-doctor-selection.md`
   summary: Add automated browser coverage for selecting, saving, reloading, and clearing a Doctor preference when browser-test infrastructure is available.
   evidence: Current tests cover the Doctors service, Cases service, and routes, but the repo has no UI test harness and the integrated browser tool returned a CDP connection timeout during this verification attempt.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-4-1-specialty-filtered-case-queue-with-sla-visibility.md`
+  summary: Add a database-backed regression test that verifies the Story 4.1 migration backfills `submitted_at` for pre-existing Submitted Cases.
+  evidence: The SQL backfills from `updated_at`, but PostgreSQL rejects the configured credentials with `P1000`, so the migration could not be exercised against a pre-migration Case row.

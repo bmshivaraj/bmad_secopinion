@@ -25,6 +25,19 @@ interface Specialty {
   name: string;
 }
 
+interface UnclassifiedCase {
+  id: string;
+  affectedBodyArea: string;
+  condition: string;
+  recommendation: string;
+  additionalDetails: string;
+  urgencyTier: "Standard" | "Urgent" | null;
+  doctorId: string | null;
+  assignedDoctorName: string | null;
+  documents: { id: string; fileName: string; contentType: string; sizeBytes: number }[];
+  submittedAt: string | null;
+}
+
 interface ApiResult<T> {
   data: T | null;
   error: { message: string } | null;
@@ -39,17 +52,23 @@ function formatFileSize(sizeBytes: number): string {
 export default function AdminPage() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [specialties, setSpecialties] = useState<Specialty[]>([]);
+  const [unclassifiedCases, setUnclassifiedCases] = useState<UnclassifiedCase[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSpecialtiesLoading, setIsSpecialtiesLoading] = useState(true);
+  const [isCasesLoading, setIsCasesLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAddingSpecialty, setIsAddingSpecialty] = useState(false);
   const [busyDoctorId, setBusyDoctorId] = useState<string | null>(null);
+  const [busyCaseId, setBusyCaseId] = useState<string | null>(null);
+  const [caseSpecialtySelections, setCaseSpecialtySelections] = useState<Record<string, string>>({});
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [specialtyError, setSpecialtyError] = useState("");
   const [specialtyNotice, setSpecialtyNotice] = useState("");
+  const [casesError, setCasesError] = useState("");
+  const [casesNotice, setCasesNotice] = useState("");
 
   useEffect(() => {
     let isCurrent = true;
@@ -105,8 +124,35 @@ export default function AdminPage() {
       }
     }
 
+    async function loadUnclassifiedCases() {
+      setIsCasesLoading(true);
+      setCasesError("");
+      try {
+        const response = await fetch("/api/cases/unclassified", { cache: "no-store" });
+        const result = await response.json() as ApiResult<UnclassifiedCase[]>;
+        if (!isCurrent) return;
+        if (response.status === 401 || response.status === 403) {
+          setIsAuthenticated(false);
+          setUnclassifiedCases([]);
+          return;
+        }
+        if (!response.ok || result.error || !result.data) {
+          setCasesError(result.error?.message ?? "Unable to load unclassified Cases.");
+          return;
+        }
+        setIsAuthenticated(true);
+        setUnclassifiedCases(result.data);
+        setCasesError("");
+      } catch {
+        if (isCurrent) setCasesError("Unable to connect. Please try again.");
+      } finally {
+        if (isCurrent) setIsCasesLoading(false);
+      }
+    }
+
     void loadQueue();
     void loadSpecialties();
+    void loadUnclassifiedCases();
     return () => {
       isCurrent = false;
     };
@@ -164,6 +210,45 @@ export default function AdminPage() {
     }
   }
 
+  async function handleClassifyCase(caseId: string) {
+    const specialtyId = caseSpecialtySelections[caseId] ?? specialties[0]?.id;
+    const previousCase = unclassifiedCases.find(({ id }) => id === caseId);
+    if (!specialtyId || busyCaseId) return;
+    setBusyCaseId(caseId);
+    setCasesError("");
+    setCasesNotice("");
+    try {
+      const response = await fetch(`/api/cases/${encodeURIComponent(caseId)}/specialty`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ specialtyId }),
+      });
+      const result = await response.json() as ApiResult<{ id: string; doctorId: string | null }>;
+      if (response.status === 401 || response.status === 403) {
+        setIsAuthenticated(false);
+        return;
+      }
+      if (!response.ok || result.error || !result.data) {
+        setCasesError(result.error?.message ?? "Unable to classify this Case.");
+        if (response.status === 409) setRefreshKey((value) => value + 1);
+        return;
+      }
+      setUnclassifiedCases((current) => current.filter(({ id }) => id !== caseId));
+      setCaseSpecialtySelections((current) => {
+        const next = { ...current };
+        delete next[caseId];
+        return next;
+      });
+      setCasesNotice(previousCase?.doctorId && !result.data.doctorId
+        ? "Case classified. Its incompatible Doctor assignment was cleared; the Patient's preference remains saved."
+        : "Case classified and added to matching Doctor queues.");
+    } catch {
+      setCasesError("Unable to connect. Please try again.");
+    } finally {
+      setBusyCaseId(null);
+    }
+  }
+
   async function handleAddSpecialty(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSpecialtiesLoading || isAddingSpecialty) return;
@@ -199,11 +284,14 @@ export default function AdminPage() {
       if (!response.ok) throw new Error("Logout request failed.");
       setIsAuthenticated(false);
       setApplications([]);
+      setUnclassifiedCases([]);
       setSpecialties([]);
       setError("");
       setNotice("");
       setSpecialtyError("");
       setSpecialtyNotice("");
+      setCasesError("");
+      setCasesNotice("");
       setRefreshKey((value) => value + 1);
     } catch {
       setError("Unable to sign out. Please try again.");
@@ -251,6 +339,72 @@ export default function AdminPage() {
           </div>
           {!error && <p className="admin-queue-count" aria-live="polite">{applications.length} pending</p>}
         </div>
+
+        <section className="admin-case-classification-section" aria-labelledby="admin-case-classification-heading">
+          <div className="admin-heading-row">
+            <div>
+              <p className="admin-eyebrow">Case routing</p>
+              <h1 id="admin-case-classification-heading">Unclassified Cases</h1>
+            </div>
+            {!isCasesLoading && <p className="admin-queue-count">{unclassifiedCases.length} awaiting Specialty</p>}
+          </div>
+          {casesNotice && <p className="admin-notice" role="status">{casesNotice}</p>}
+          {casesError && <p className="admin-error" role="alert">{casesError}</p>}
+          {isCasesLoading ? (
+            <p className="admin-muted" role="status">Loading Cases...</p>
+          ) : casesError && unclassifiedCases.length === 0 ? (
+            <section className="admin-empty-state"><h2>Case worklist unavailable</h2><p>The unclassified Cases could not be loaded.</p></section>
+          ) : unclassifiedCases.length === 0 ? (
+            <section className="admin-empty-state"><h2>All Cases classified</h2><p>No submitted Cases are waiting for a Specialty.</p></section>
+          ) : (
+            <div className="admin-case-list">
+              {unclassifiedCases.map((caseRecord) => (
+                <article className="admin-case-row" key={caseRecord.id}>
+                  <div className="admin-case-description">
+                    <h2>{caseRecord.affectedBodyArea}</h2>
+                    <p>{caseRecord.condition}</p>
+                    <p><strong>Patient-provided recommendation:</strong> {caseRecord.recommendation}</p>
+                    {caseRecord.additionalDetails && <p><strong>Additional details:</strong> {caseRecord.additionalDetails}</p>}
+                    {caseRecord.documents.length > 0 && (
+                      <ul>
+                        {caseRecord.documents.map((document) => (
+                          <li key={document.id}><a href={`/api/cases/documents/${encodeURIComponent(document.id)}`}>{document.fileName}</a></li>
+                        ))}
+                      </ul>
+                    )}
+                    {caseRecord.doctorId && (
+                      <p>
+                        Currently assigned to {caseRecord.assignedDoctorName ?? "a Doctor"}. If this Specialty does not match, classification clears that assignment while preserving the Patient preference.
+                      </p>
+                    )}
+                    <span>{caseRecord.urgencyTier ?? "Urgency unavailable"} - Submitted {caseRecord.submittedAt ? new Date(caseRecord.submittedAt).toLocaleString() : "time unavailable"}</span>
+                  </div>
+                  <div className="admin-case-classify-controls">
+                    <label className="sr-only" htmlFor={`case-specialty-${caseRecord.id}`}>Specialty for Case</label>
+                    <select
+                      id={`case-specialty-${caseRecord.id}`}
+                      value={caseSpecialtySelections[caseRecord.id] ?? specialties[0]?.id ?? ""}
+                      onChange={(event) => setCaseSpecialtySelections((current) => ({ ...current, [caseRecord.id]: event.target.value }))}
+                      disabled={isSpecialtiesLoading || specialties.length === 0 || busyCaseId !== null}
+                    >
+                      {specialties.length === 0 ? <option value="">No active specialties</option> : specialties.map((specialty) => (
+                        <option value={specialty.id} key={specialty.id}>{specialty.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      className="admin-decision admin-decision-approve"
+                      type="button"
+                      onClick={() => void handleClassifyCase(caseRecord.id)}
+                      disabled={isSpecialtiesLoading || specialties.length === 0 || busyCaseId !== null}
+                    >
+                      {busyCaseId === caseRecord.id ? "Saving..." : "Classify"}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
 
         {notice && <p className="admin-notice" role="status">{notice}</p>}
         {error && <p className="admin-error" role="alert">{error}</p>}

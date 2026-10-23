@@ -4,6 +4,7 @@ import type { PaymentUrgencyTier } from "../../../shared/payment-provider";
 
 export type PaymentAttemptStatus = "Pending" | "Failed" | "Succeeded";
 export type PaymentRefundStatus = "Pending" | "Failed" | "Uncertain" | "Succeeded";
+export type PayoutAttemptStatus = "Pending" | "Failed" | "Uncertain" | "Succeeded";
 
 export interface PaymentAttempt {
 	id: string;
@@ -30,6 +31,56 @@ export interface PaymentAttemptInput {
 	urgencyTier: PaymentUrgencyTier;
 	chargedAmount: Prisma.Decimal;
 	selectedDoctorId: string | null;
+}
+
+export interface PayoutAttempt {
+	id: string;
+	caseId: string;
+	doctorId: string;
+	chargedAmount: Prisma.Decimal;
+	platformFeePercent: Prisma.Decimal;
+	payoutAmount: Prisma.Decimal;
+	upiId: string | null;
+	idempotencyKey: string;
+	transactionId: string | null;
+	status: PayoutAttemptStatus;
+	providerError: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+export interface PayoutAttemptInput {
+	caseId: string;
+	doctorId: string;
+	chargedAmount: Prisma.Decimal;
+	platformFeePercent: Prisma.Decimal;
+	payoutAmount: Prisma.Decimal;
+}
+
+export interface PayoutBatchCheckpoint {
+	opinionCreatedAt: Date | null;
+	caseId: string | null;
+}
+
+export interface PayoutRetryCursor {
+	id: string;
+	createdAt: Date;
+}
+
+export class PayoutAttemptConflictError extends DomainError {
+	readonly code = "PAYOUT_ATTEMPT_CONFLICT";
+
+	constructor() {
+		super("A payout attempt already exists for different Case details.");
+	}
+}
+
+export class PayoutHistoryAccessDeniedError extends DomainError {
+	readonly code = "PAYOUT_HISTORY_ACCESS_DENIED";
+
+	constructor() {
+		super("A Doctor session is required to access payout history.");
+	}
 }
 
 export class PaymentAttemptConflictError extends DomainError {

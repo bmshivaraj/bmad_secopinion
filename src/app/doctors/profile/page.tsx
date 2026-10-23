@@ -12,6 +12,15 @@ interface PayoutProfile {
 	upiId: string | null;
 }
 
+interface PayoutHistoryEntry {
+	caseId: string;
+	amount: string;
+	status: "Pending" | "Failed" | "Uncertain" | "Succeeded";
+	transactionId: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
 export default function DoctorProfilePage() {
 	const [upiId, setUpiId] = useState("");
 	const [isLoading, setIsLoading] = useState(true);
@@ -19,6 +28,9 @@ export default function DoctorProfilePage() {
 	const [isUnauthorized, setIsUnauthorized] = useState(false);
 	const [loadError, setLoadError] = useState("");
 	const [loadAttempt, setLoadAttempt] = useState(0);
+	const [payoutHistory, setPayoutHistory] = useState<PayoutHistoryEntry[]>([]);
+	const [isHistoryLoading, setIsHistoryLoading] = useState(true);
+	const [historyError, setHistoryError] = useState("");
 	const [error, setError] = useState("");
 	const [notice, setNotice] = useState("");
 
@@ -43,6 +55,33 @@ export default function DoctorProfilePage() {
 			})
 			.finally(() => {
 				if (isActive) setIsLoading(false);
+			});
+		return () => {
+			isActive = false;
+		};
+	}, [loadAttempt]);
+
+	useEffect(() => {
+		let isActive = true;
+		fetch("/api/doctors/profile/payout-history")
+			.then(async (response) => ({ response, result: await response.json() as ApiResult<PayoutHistoryEntry[]> }))
+			.then(({ response, result }) => {
+				if (!isActive) return;
+				if (response.status === 401 || response.status === 403) {
+					setIsUnauthorized(true);
+					return;
+				}
+				if (!response.ok || result.error || !result.data) {
+					setHistoryError(result.error?.message ?? "Unable to load payout history.");
+					return;
+				}
+				setPayoutHistory(result.data);
+			})
+			.catch(() => {
+				if (isActive) setHistoryError("Unable to connect. Please try again.");
+			})
+			.finally(() => {
+				if (isActive) setIsHistoryLoading(false);
 			});
 		return () => {
 			isActive = false;
@@ -141,10 +180,46 @@ export default function DoctorProfilePage() {
 									<button className="auth-secondary" type="button" onClick={() => {
 										setIsLoading(true);
 										setLoadError("");
+										setIsHistoryLoading(true);
+										setHistoryError("");
 										setLoadAttempt((attempt) => attempt + 1);
 									}}>Retry</button>
 								</div>
 							)}
+							<section className="payout-history" aria-labelledby="payout-history-title">
+								<h3 id="payout-history-title">Payout history</h3>
+								{isHistoryLoading && <p className="field-hint" role="status">Loading payout history...</p>}
+								{!isHistoryLoading && historyError && (
+									<div>
+										<p className="auth-error" role="alert">{historyError}</p>
+										<button className="auth-secondary" type="button" onClick={() => {
+											setIsHistoryLoading(true);
+											setHistoryError("");
+											setLoadAttempt((attempt) => attempt + 1);
+										}}>Retry history</button>
+									</div>
+								)}
+								{!isHistoryLoading && !historyError && payoutHistory.length === 0 && (
+									<p className="field-hint">No payouts yet.</p>
+								)}
+								{!isHistoryLoading && !historyError && payoutHistory.length > 0 && (
+									<ol className="payout-history-list">
+										{payoutHistory.map((entry) => (
+											<li className="payout-history-item" key={entry.caseId}>
+												<div>
+													<strong>Case {entry.caseId}</strong>
+													<span>Updated {new Date(entry.updatedAt).toLocaleDateString()}</span>
+													{entry.transactionId && <span>Transfer ref {entry.transactionId}</span>}
+												</div>
+												<div className="payout-history-value">
+													<strong>₹{entry.amount}</strong>
+													<span>{entry.status}</span>
+												</div>
+											</li>
+										))}
+									</ol>
+								)}
+							</section>
 						</>
 					)}
 				</div>

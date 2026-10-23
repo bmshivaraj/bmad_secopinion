@@ -230,6 +230,54 @@ a {
   line-height: 1.5;
 }
 
+.payout-history {
+  margin-top: 36px;
+  border-top: 1px solid #dce4dd;
+  padding-top: 24px;
+}
+
+.payout-history h3 {
+  margin: 0 0 14px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 22px;
+  font-weight: 400;
+}
+
+.payout-history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.payout-history-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  border-top: 1px solid #e6ebe7;
+  padding: 13px 0;
+}
+
+.payout-history-item > div,
+.payout-history-value {
+  display: grid;
+  gap: 4px;
+}
+
+.payout-history-item strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+
+.payout-history-item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.payout-history-value {
+  justify-items: end;
+  flex: 0 0 auto;
+}
+
 .auth-submit {
   display: flex;
   min-height: 51px;

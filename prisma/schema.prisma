@@ -61,6 +61,15 @@ enum PaymentRefundStatus {
   @@map("payment_refund_status")
 }
 
+enum PayoutAttemptStatus {
+  Pending
+  Failed
+  Uncertain
+  Succeeded
+
+  @@map("payout_attempt_status")
+}
+
 enum CaseRefundDecision {
   Approving
   Rejected
@@ -176,6 +185,7 @@ model Case {
   specialtyId           String?      @map("specialty_id")
   urgencyTier           UrgencyTier? @map("urgency_tier")
   chargedAmount         Decimal?     @map("charged_amount") @db.Decimal(10, 2)
+  platformFeePercentAtClosure Decimal? @map("platform_fee_percent_at_closure") @db.Decimal(5, 2)
   status                CaseStatus   @default(Draft)
   submittedAt           DateTime?    @map("submitted_at")
   slaPauseHistory       Json         @default("[]") @map("sla_pause_history")
@@ -254,4 +264,33 @@ model PaymentAttempt {
   updatedAt        DateTime             @updatedAt @map("updated_at")
 
   @@map("payment_attempts")
+}
+
+model PayoutAttempt {
+  id                   String              @id @default(uuid())
+  caseId               String              @unique @map("case_id")
+  doctorId             String              @map("doctor_id")
+  chargedAmount        Decimal             @map("charged_amount") @db.Decimal(10, 2)
+  platformFeePercent   Decimal             @map("platform_fee_percent") @db.Decimal(5, 2)
+  payoutAmount         Decimal             @map("payout_amount") @db.Decimal(10, 2)
+  upiId                String?             @map("upi_id")
+  idempotencyKey       String              @unique @map("idempotency_key")
+  transactionId        String?             @map("transaction_id")
+  status               PayoutAttemptStatus @default(Pending)
+  providerError        String?             @map("provider_error")
+  createdAt            DateTime            @default(now()) @map("created_at")
+  updatedAt            DateTime            @updatedAt @map("updated_at")
+
+  @@index([doctorId, createdAt])
+  @@index([status, createdAt])
+  @@map("payout_attempts")
+}
+
+model PayoutBatchCheckpoint {
+  id               String   @id
+  opinionCreatedAt DateTime? @map("opinion_created_at")
+  caseId           String?  @map("case_id")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("payout_batch_checkpoints")
 }

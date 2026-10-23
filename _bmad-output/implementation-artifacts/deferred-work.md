@@ -157,3 +157,23 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-2-admin-refund-approval-rejection.md`
   summary: Decide whether Admin refund approvals and rejections require durable actor attribution and decision-history retention.
   evidence: The Case stores its current decision but not the Admin actor or a separate rejection timestamp, while repeated rejection cycles overwrite the SLA anchor; compliance and product requirements must establish the audit retention contract.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-daily-doctor-payout-batch.md`
+  summary: Apply the payout migration and verify the legacy Opinion fee backfill and checkpoint behavior against PostgreSQL.
+  evidence: Prisma validation and mocked repository/job tests pass, but `npx prisma migrate status` fails with `P1000`; database-backed migration and concurrency behavior remain unverified.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-daily-doctor-payout-batch.md`
+  summary: Add Doctor payout history page-level rendering and interaction tests when UI test infrastructure is available.
+  evidence: Service and route tests verify owner scoping and fields, but the repository has no page/browser test harness for rendering or loading states.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-daily-doctor-payout-batch.md`
+  summary: Establish expected Doctor payout-history size and latency, then add pagination if measured usage warrants it.
+  evidence: History currently returns and renders all attempts; no expected payout count or page-load target is specified to determine a suitable cursor size.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-daily-doctor-payout-batch.md`
+  summary: Define how Story 5.5 synchronizes PlatformSettings changes with concurrent Opinion closure snapshots.
+  evidence: Story 5.3 reads the current fee percentage immediately before the Cases transaction; the current app has no fee-update path, but future Admin edits need a consistent effective-time/serialization policy.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-3-daily-doctor-payout-batch.md`
+  summary: Configure and verify a real PaymentProvider payout adapter before live money movement.
+  evidence: The registered provider is `MockPaymentProvider`, which returns simulated idempotent success and logs a mock payout; a real provider integration and credentials are not configured in this repository.

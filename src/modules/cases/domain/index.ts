@@ -52,6 +52,7 @@ export interface CaseRecord {
 	selectedDoctorId: string | null;
 	urgencyTier: "Standard" | "Urgent" | null;
 	chargedAmount: Prisma.Decimal | null;
+	platformFeePercentAtClosure: Prisma.Decimal | null;
 	status: CaseStatus;
 	submittedAt: Date | null;
 	slaPauseHistory: Prisma.JsonValue;

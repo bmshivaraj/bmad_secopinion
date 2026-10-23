@@ -103,6 +103,7 @@ export function createAdminService(
 			return {
 				standardCaseFee: settings.standardCaseFee,
 				urgentCaseFee: settings.urgentCaseFee,
+				platformFeePercent: settings.platformFeePercent,
 			};
 		},
 

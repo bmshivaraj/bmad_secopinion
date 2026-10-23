@@ -206,6 +206,7 @@ export const casesRepository = {
 		doctorId: string,
 		text: string,
 		submittedAt: Date,
+		platformFeePercent: Prisma.Decimal,
 	): Promise<CaseOpinionRecord | null> {
 		return prisma.$transaction(async (transaction) => {
 			const current = await transaction.case.findFirst({
@@ -227,7 +228,7 @@ export const casesRepository = {
 			if (current.status === "MoreInfoRequested" && !activeRequest) return null;
 			const movedToOpinion = await transaction.case.updateMany({
 				where: { id: caseId, doctorId, status: current.status },
-				data: { status: "OpinionGiven", slaPauseHistory },
+				data: { status: "OpinionGiven", slaPauseHistory, platformFeePercentAtClosure: platformFeePercent },
 			});
 			if (movedToOpinion.count !== 1) return null;
 			const opinion = await transaction.caseOpinion.create({
@@ -255,6 +256,7 @@ export const casesRepository = {
 				status: "Closed",
 				doctorId: { not: null },
 				chargedAmount: { not: null },
+				platformFeePercentAtClosure: { not: null },
 				opinion: after
 					? { is: { OR: [
 						{ createdAt: { gt: after.opinionCreatedAt } },
@@ -268,6 +270,7 @@ export const casesRepository = {
 				id: true,
 				doctorId: true,
 				chargedAmount: true,
+				platformFeePercentAtClosure: true,
 				opinion: { select: { createdAt: true } },
 			},
 		});

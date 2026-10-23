@@ -17,7 +17,7 @@ import type {
 process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopinion_test";
 process.env.JWT_SECRET ??= "doctor-auth-test-secret";
 
-const { createDoctorsService } = await import("./service");
+const { createDoctorsService, doctorsService } = await import("./service");
 const { doctorsRepository } = await import("./repository");
 const { prisma } = await import("../../shared/prisma-client");
 const { signAuthToken, verifyAuthToken, verifyDoctorRegistrationToken } = await import("../../shared/auth-context");
@@ -762,6 +762,17 @@ test("payout profile reads and updates are Doctor-owner scoped", async () => {
     fixture.service.getOwnPayoutProfile({ userId: randomUUID(), role: "doctor" }),
     { code: "DOCTOR_PAYOUT_PROFILE_NOT_FOUND" },
   );
+});
+
+test("payout destination service rejects malformed stored UPI IDs", async () => {
+  const originalFind = doctorsRepository.findPayoutProfile;
+  doctorsRepository.findPayoutProfile = async (doctorId) => doctorId === "legacy-doctor" ? { upiId: "not-a-valid-upi" } : null;
+  try {
+    assert.deepEqual(await doctorsService.getPayoutDestination("legacy-doctor"), { upiId: null });
+    assert.equal(await doctorsService.getPayoutDestination("missing-doctor"), null);
+  } finally {
+    doctorsRepository.findPayoutProfile = originalFind;
+  }
 });
 
 test("payout profile API authenticates the Doctor session and uses its owner ID", async () => {

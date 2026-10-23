@@ -428,6 +428,12 @@ export function createDoctorsService(
 			return profile;
 		},
 
+		getPayoutDestination(doctorId: string): Promise<{ upiId: string | null } | null> {
+			return repository.findPayoutProfile(doctorId).then((profile) => profile
+				? { upiId: profile.upiId && isValidUpiId(profile.upiId) ? profile.upiId : null }
+				: null);
+		},
+
 		async updateOwnPayoutProfile(caller: AuthContext, upiId: string): Promise<{ upiId: string | null }> {
 			if (caller.role !== "doctor") throw new DoctorPayoutAccessDeniedError();
 			if (typeof upiId !== "string" || !isValidUpiId(upiId)) throw new InvalidUpiIdError();

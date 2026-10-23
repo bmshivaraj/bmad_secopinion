@@ -720,7 +720,14 @@ export function createCasesService(
 			if (record.status !== "UnderReview" && record.status !== "MoreInfoRequested") {
 				throw new CaseOpinionConflictError();
 			}
-			const opinion = await repository.submitOpinion(caseId, caller.userId, normalizedText, new Date());
+			const settings = await admin.getPlatformSettings();
+			const opinion = await repository.submitOpinion(
+				caseId,
+				caller.userId,
+				normalizedText,
+				new Date(),
+				settings.platformFeePercent,
+			);
 			if (!opinion) throw new CaseOpinionConflictError();
 			return publicOpinion(opinion);
 		},
@@ -850,10 +857,12 @@ export function createCasesService(
 				throw new InvalidCaseInputError("after must be a valid Opinion cursor or null.");
 			}
 			const records = await repository.listClosedOpinionsForPayout(after);
-			const items = records.flatMap((record) => record.doctorId && record.chargedAmount && record.opinion ? [{
+			const items = records.flatMap((record) => record.doctorId && record.chargedAmount
+				&& record.platformFeePercentAtClosure && record.opinion ? [{
 				caseId: record.id,
 				doctorId: record.doctorId,
 				chargedAmount: record.chargedAmount.toFixed(2),
+				platformFeePercent: record.platformFeePercentAtClosure.toFixed(2),
 				opinionCreatedAt: record.opinion.createdAt.toISOString(),
 			}] : []);
 			const lastRecord = records.at(-1);

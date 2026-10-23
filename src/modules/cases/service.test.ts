@@ -47,6 +47,7 @@ function createFixture(options: {
 	includeAdditionalDoctors?: boolean;
 	standardCaseFee?: string;
 	urgentCaseFee?: string;
+	platformFeePercent?: string;
 } = {}) {
 	const cases = new Map<string, CaseRecord>();
 		const requestCases = new Map<string, string>();
@@ -64,6 +65,7 @@ function createFixture(options: {
 	let failSettings = options.failSettings ?? false;
 	let standardCaseFee = options.standardCaseFee ?? "1000.00";
 	let urgentCaseFee = options.urgentCaseFee ?? "2000.00";
+	let platformFeePercent = options.platformFeePercent ?? "20.00";
 	let chargeCalls = 0;
 	let refundCalls = 0;
 	const attempts = new Map<string, PaymentAttempt>();
@@ -74,7 +76,7 @@ function createFixture(options: {
 			if (requestCases.has(creationRequestId)) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
 			const now = new Date();
 			const record: CaseRecord = {
-				id: randomUUID(), patientId, doctorId: null, specialtyId: null, ...input, selectedDoctorId: null, urgencyTier: null, chargedAmount: null, status: "Draft", submittedAt: null, slaPauseHistory: [], assignmentLockVersion: 0, refundDecision: null, refundConfirmedAt: null, documents: [], createdAt: now, updatedAt: now,
+				id: randomUUID(), patientId, doctorId: null, specialtyId: null, ...input, selectedDoctorId: null, urgencyTier: null, chargedAmount: null, platformFeePercentAtClosure: null, status: "Draft", submittedAt: null, slaPauseHistory: [], assignmentLockVersion: 0, refundDecision: null, refundConfirmedAt: null, documents: [], createdAt: now, updatedAt: now,
 			};
 			cases.set(record.id, record);
 			requestCases.set(creationRequestId, record.id);
@@ -248,7 +250,7 @@ function createFixture(options: {
 				? { ...record, documentRequests: documentRequests.get(record.id) ?? [], opinion: opinions.get(record.id) ?? null }
 				: null;
 		},
-		async submitOpinion(caseId: string, doctorId: string, text: string, submittedAt: Date): Promise<CaseOpinionRecord | null> {
+		async submitOpinion(caseId: string, doctorId: string, text: string, submittedAt: Date, feePercent: Prisma.Decimal): Promise<CaseOpinionRecord | null> {
 			const record = cases.get(caseId);
 			if (!record || record.doctorId !== doctorId || !["UnderReview", "MoreInfoRequested"].includes(record.status)) return null;
 			const history = Array.isArray(record.slaPauseHistory) ? [...record.slaPauseHistory] : [];
@@ -269,7 +271,13 @@ function createFixture(options: {
 				nextRequests[activeRequestIndex] = { ...nextRequests[activeRequestIndex], closedAt: submittedAt };
 				documentRequests.set(caseId, nextRequests);
 			}
-			cases.set(caseId, { ...record, status: "Closed", slaPauseHistory: history, updatedAt: submittedAt });
+			cases.set(caseId, {
+				...record,
+				status: "Closed",
+				slaPauseHistory: history,
+				platformFeePercentAtClosure: feePercent,
+				updatedAt: submittedAt,
+			});
 			return opinion;
 		},
 		async listClosedOpinionsForPayout(after: OpinionPayoutCursor | null) {
@@ -277,8 +285,8 @@ function createFixture(options: {
 				const record = cases.get(opinion.caseId);
 				const isAfter = !after || opinion.createdAt > after.opinionCreatedAt
 					|| (opinion.createdAt.getTime() === after.opinionCreatedAt.getTime() && opinion.caseId > after.caseId);
-				return isAfter && record?.status === "Closed" && record.doctorId && record.chargedAmount
-					? [{ id: record.id, doctorId: record.doctorId, chargedAmount: record.chargedAmount, opinion: { createdAt: opinion.createdAt } }]
+				return isAfter && record?.status === "Closed" && record.doctorId && record.chargedAmount && record.platformFeePercentAtClosure
+					? [{ id: record.id, doctorId: record.doctorId, chargedAmount: record.chargedAmount, platformFeePercentAtClosure: record.platformFeePercentAtClosure, opinion: { createdAt: opinion.createdAt } }]
 					: [];
 			}).sort((left, right) => left.opinion.createdAt.getTime() - right.opinion.createdAt.getTime() || left.id.localeCompare(right.id)).slice(0, 100);
 		},
@@ -418,6 +426,7 @@ function createFixture(options: {
 			return {
 				standardCaseFee: new Prisma.Decimal(standardCaseFee),
 				urgentCaseFee: new Prisma.Decimal(urgentCaseFee),
+				platformFeePercent: new Prisma.Decimal(platformFeePercent),
 			};
 		},
 	};
@@ -492,6 +501,7 @@ function createFixture(options: {
 		setFailRefund(value: boolean) { failRefund = value; },
 		setFailSettings(value: boolean) { failSettings = value; },
 		setFees(standard: string, urgent: string) { standardCaseFee = standard; urgentCaseFee = urgent; },
+		setPlatformFeePercent(value: string) { platformFeePercent = value; },
 		repository,
 		service: createCasesService(repository, storage, doctors, admin, payments),
 	};
@@ -536,7 +546,9 @@ test("assigned Doctor submits one final Opinion, closes the Case, and exposes pa
 
 	assert.deepEqual(opinion, { text: "Conservative treatment is appropriate.", createdAt: opinion.createdAt });
 	assert.equal(fixture.cases.get(record.id)?.status, "Closed");
+	assert.equal(fixture.cases.get(record.id)?.platformFeePercentAtClosure?.toFixed(2), "20.00");
 	assert.equal(fixture.cases.get(record.id)?.submittedAt, submittedAt);
+	fixture.setPlatformFeePercent("45.00");
 	const doctorDetail = await fixture.service.getDoctorCase(VERIFIED_DOCTOR, record.id);
 	assert.equal(doctorDetail.opinion?.text, opinion.text);
 	assert.equal(doctorDetail.elapsedSlaMs, computeElapsedSlaTime({ submittedAt, slaPauseHistory: fixture.cases.get(record.id)!.slaPauseHistory }, new Date(opinion.createdAt)));
@@ -546,6 +558,7 @@ test("assigned Doctor submits one final Opinion, closes the Case, and exposes pa
 			caseId: record.id,
 			doctorId: VERIFIED_DOCTOR.userId,
 			chargedAmount: "1000.00",
+			platformFeePercent: "20.00",
 			opinionCreatedAt: opinion.createdAt,
 		}],
 		nextCursor: null,
@@ -861,18 +874,24 @@ test("daily SLA scheduler runs once immediately, registers one 24-hour interval,
 });
 
 test("Next Node instrumentation registers the daily SLA scheduler", async () => {
-	const jobGlobal = globalThis as typeof globalThis & { __secOpinionSlaBreachJobStarted?: boolean };
+	const jobGlobal = globalThis as typeof globalThis & {
+		__secOpinionSlaBreachJobStarted?: boolean;
+		__secOpinionDoctorPayoutJobStarted?: boolean;
+	};
 	const originalRuntime = process.env.NEXT_RUNTIME;
 	const originalSetInterval = globalThis.setInterval;
 	const originalScan = casesService.runSlaBreachScan;
+	const originalPayoutEligibility = casesService.listClosedOpinionsForPayout;
 	let intervalRegistrations = 0;
 	let scanCalls = 0;
 	process.env.NEXT_RUNTIME = "nodejs";
 	delete jobGlobal.__secOpinionSlaBreachJobStarted;
+	delete jobGlobal.__secOpinionDoctorPayoutJobStarted;
 	casesService.runSlaBreachScan = async () => {
 		scanCalls += 1;
 		return { scannedCount: 0, transitionedCount: 0, refundCases: [] };
 	};
+	casesService.listClosedOpinionsForPayout = async () => ({ items: [], nextCursor: null });
 	globalThis.setInterval = ((callback: (...args: never[]) => void, delay?: number) => {
 		intervalRegistrations += 1;
 		assert.equal(delay, 24 * 60 * 60 * 1000);
@@ -884,13 +903,15 @@ test("Next Node instrumentation registers the daily SLA scheduler", async () => 
 		await register();
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(scanCalls, 1);
-		assert.equal(intervalRegistrations, 1);
+		assert.equal(intervalRegistrations, 2);
 	} finally {
 		casesService.runSlaBreachScan = originalScan;
+		casesService.listClosedOpinionsForPayout = originalPayoutEligibility;
 		globalThis.setInterval = originalSetInterval;
 		if (originalRuntime === undefined) delete process.env.NEXT_RUNTIME;
 		else process.env.NEXT_RUNTIME = originalRuntime;
 		delete jobGlobal.__secOpinionSlaBreachJobStarted;
+		delete jobGlobal.__secOpinionDoctorPayoutJobStarted;
 	}
 });
 
@@ -1897,7 +1918,7 @@ test("Opinion repository closes MoreInfoRequested through OpinionGiven and close
 	};
 	prismaClient.$transaction = async (callback) => callback(transaction);
 	try {
-		const opinion = await casesRepository.submitOpinion("case-1", "doctor-1", "Final opinion.", submittedAt);
+		const opinion = await casesRepository.submitOpinion("case-1", "doctor-1", "Final opinion.", submittedAt, new Prisma.Decimal("20.00"));
 		assert.equal(opinion?.id, "opinion-1");
 		assert.deepEqual(transitions, [
 			{
@@ -1905,6 +1926,7 @@ test("Opinion repository closes MoreInfoRequested through OpinionGiven and close
 				data: {
 					status: "OpinionGiven",
 					slaPauseHistory: [{ pausedAt: "2026-10-22T12:00:00.000Z", resumedAt: submittedAt.toISOString() }],
+					platformFeePercentAtClosure: new Prisma.Decimal("20.00"),
 				},
 			},
 			{
@@ -1935,6 +1957,7 @@ test("payout eligibility repository uses a stable composite cursor and bounded p
 				status: "Closed",
 				doctorId: { not: null },
 				chargedAmount: { not: null },
+				platformFeePercentAtClosure: { not: null },
 				opinion: { is: { OR: [
 					{ createdAt: { gt: after.opinionCreatedAt } },
 					{ createdAt: after.opinionCreatedAt, caseId: { gt: after.caseId } },
@@ -1946,6 +1969,7 @@ test("payout eligibility repository uses a stable composite cursor and bounded p
 				id: true,
 				doctorId: true,
 				chargedAmount: true,
+				platformFeePercentAtClosure: true,
 				opinion: { select: { createdAt: true } },
 			},
 		});
@@ -2015,7 +2039,7 @@ test("Opinion repository transaction rolls back Opinion, request close, and SLA 
 		}
 	};
 	try {
-		await assert.rejects(casesRepository.submitOpinion("case-1", "doctor-1", "Final opinion.", submittedAt), { code: "CASE_OPINION_CONFLICT" });
+		await assert.rejects(casesRepository.submitOpinion("case-1", "doctor-1", "Final opinion.", submittedAt, new Prisma.Decimal("20.00")), { code: "CASE_OPINION_CONFLICT" });
 		assert.deepEqual(state, {
 			status: "MoreInfoRequested",
 			slaPauseHistory: initialPauseHistory,

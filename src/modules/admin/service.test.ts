@@ -134,7 +134,11 @@ test("Admin service exposes only the current fee values to internal consumers", 
     },
   });
 
-  assert.deepEqual(await service.getPlatformSettings(), { standardCaseFee, urgentCaseFee });
+  assert.deepEqual(await service.getPlatformSettings(), {
+    standardCaseFee,
+    urgentCaseFee,
+    platformFeePercent: new Prisma.Decimal("20.00"),
+  });
 });
 
 test("non-Admin callers cannot read or decide applications", async () => {

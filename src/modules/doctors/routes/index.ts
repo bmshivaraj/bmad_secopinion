@@ -163,6 +163,7 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	INVALID_UPI_ID: 400,
 	DOCTOR_PAYOUT_ACCESS_DENIED: 403,
 	DOCTOR_PAYOUT_PROFILE_NOT_FOUND: 404,
+	PAYOUT_HISTORY_ACCESS_DENIED: 403,
 };
 
 export function toErrorResponse(error: unknown): NextResponse {

@@ -13,6 +13,7 @@ process.env.JWT_SECRET ??= "cases-auth-test-secret";
 const { casesService, createCasesService } = await import("./service");
 const { casesRepository } = await import("./repository");
 const { runCaseSlaBreachJob, startDailyCaseSlaBreachJob } = await import("./sla-breach-job");
+const { createOperatorAlertSender } = await import("../../shared/operator-alert");
 const { prisma } = await import("../../shared/prisma-client");
 const { PaymentDeclinedError, PaymentRefundFailedError, PaymentRefundUnavailableError } = await import("../payments/domain");
 const { CASE_RESPONSE_SLA_MS, computeElapsedSlaTime } = await import("./domain/sla");
@@ -803,6 +804,7 @@ test("competing Admin approval and rejection decisions have one winner and losin
 test("daily SLA job passes one scan time and emits structured success or failure logs", async () => {
 	const info: string[] = [];
 	const errors: string[] = [];
+	const alerts: unknown[] = [];
 	const scannedTimes: Date[] = [];
 	const result = await runCaseSlaBreachJob(async (now) => {
 		scannedTimes.push(now);
@@ -821,8 +823,49 @@ test("daily SLA job passes one scan time and emits structured success or failure
 	await assert.rejects(runCaseSlaBreachJob(async () => { throw new Error("scan failed"); }, {
 		info: (message) => info.push(message),
 		error: (message) => errors.push(message),
-	}), /scan failed/);
+	}, async (alert) => { alerts.push(alert); }), /scan failed/);
 	assert.equal(JSON.parse(errors[0]).outcome, "failure");
+	assert.equal(JSON.parse(errors[0]).errorType, "Error");
+	assert.equal(JSON.parse(errors[0]).error, undefined);
+	assert.deepEqual(alerts, [{
+		event: "operator_job_failure",
+		jobName: "case_sla_breach_scan",
+		outcome: "failure",
+		startedAt: JSON.parse(errors[0]).startedAt,
+		errorType: "Error",
+	}]);
+	assert.doesNotMatch(JSON.stringify(alerts), /scan failed/);
+
+	await assert.rejects(runCaseSlaBreachJob(async () => { throw new Error("original scan error"); }, {
+		info() {},
+		error: (message) => errors.push(message),
+	}, async () => { throw new Error("delivery failed"); }), /original scan error/);
+	assert.equal(JSON.parse(errors.at(-1) ?? "{}").event, "operator_alert_delivery");
+});
+
+test("operator alert sender logs unavailable configuration without attempting delivery", async () => {
+	const errors: string[] = [];
+	let fetchCalls = 0;
+	const sender = createOperatorAlertSender({
+		logger: { error: (message) => errors.push(message) },
+		fetch: async () => {
+			fetchCalls += 1;
+			return new Response(null, { status: 200 });
+		},
+	});
+	await sender({
+		event: "operator_job_failure",
+		jobName: "case_sla_breach_scan",
+		outcome: "failure",
+		startedAt: "2026-10-23T00:00:00.000Z",
+		errorType: "Error",
+	});
+	assert.equal(fetchCalls, 0);
+	assert.deepEqual(JSON.parse(errors[0] ?? "{}"), {
+		event: "operator_alert_delivery",
+		outcome: "unavailable",
+		jobName: "case_sla_breach_scan",
+	});
 });
 
 test("daily SLA scheduler runs once immediately, registers one 24-hour interval, and prevents overlap per process", async () => {
@@ -869,6 +912,42 @@ test("daily SLA scheduler runs once immediately, registers one 24-hour interval,
 		assert.equal(maximumActiveScans, 1);
 	} finally {
 		releaseFirstScan[0]?.();
+		delete jobGlobal.__secOpinionSlaBreachJobStarted;
+	}
+});
+
+test("daily SLA scheduler remains active after alert delivery fails for a fatal run", async () => {
+	const jobGlobal = globalThis as typeof globalThis & { __secOpinionSlaBreachJobStarted?: boolean };
+	delete jobGlobal.__secOpinionSlaBreachJobStarted;
+	const callbacks: (() => void)[] = [];
+	const errors: string[] = [];
+	let scans = 0;
+	let alerts = 0;
+	try {
+		startDailyCaseSlaBreachJob(async () => {
+			scans += 1;
+			if (scans === 1) throw new Error("scan failed");
+			return { scannedCount: 1, transitionedCount: 0, refundCases: [] };
+		}, {
+			info() {},
+			error: (message) => errors.push(message),
+		}, (callback) => {
+			callbacks.push(callback);
+			return { unref() {} };
+		}, async () => {
+			alerts += 1;
+			throw new Error("delivery failed");
+		});
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(scans, 1);
+		assert.equal(alerts, 1);
+		assert.equal(JSON.parse(errors.at(-1) ?? "{}").event, "operator_alert_delivery");
+
+		callbacks[0]?.();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(scans, 2);
+		assert.equal(alerts, 1);
+	} finally {
 		delete jobGlobal.__secOpinionSlaBreachJobStarted;
 	}
 });

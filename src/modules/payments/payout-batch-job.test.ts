@@ -137,17 +137,21 @@ test("batch creates one independent transfer per Case using closure-time fee sna
 
 test("missing UPI remains pending and becomes payable when the destination is later saved", async () => {
 	const fixture = createBatchFixture({ items: [makeEligible("case-a", "doctor-1", "1000.00", "20.00")] });
-	const firstResult = await runDailyDoctorPayoutBatch(fixture.dependencies, fixture.logger);
+	const alerts: unknown[] = [];
+	const sender = async (alert: unknown) => { alerts.push(alert); };
+	const firstResult = await runDailyDoctorPayoutBatch(fixture.dependencies, fixture.logger, sender);
 	const firstAttempt = fixture.attempts.get("case-a");
 	assert.equal(firstResult.pendingCount, 1);
 	assert.equal(firstAttempt?.status, "Pending");
 	assert.equal(fixture.providerCalls.length, 0);
+	assert.equal(alerts.length, 0);
 
 	fixture.destinations.set("doctor-1", "asha@okaxis");
-	const retryResult = await runDailyDoctorPayoutBatch(fixture.dependencies, fixture.logger);
+	const retryResult = await runDailyDoctorPayoutBatch(fixture.dependencies, fixture.logger, sender);
 	assert.equal(retryResult.succeededCount, 1);
 	assert.equal(fixture.attempts.get("case-a")?.id, firstAttempt?.id);
 	assert.deepEqual(fixture.providerCalls, ["case-a"]);
+	assert.equal(alerts.length, 0);
 });
 
 test("a Case-level failure does not stop other transfers and is logged with batch counts", async () => {
@@ -160,13 +164,46 @@ test("a Case-level failure does not stop other transfers and is logged with batc
 		failingCaseId: "case-fails",
 	});
 
-	const result = await runDailyDoctorPayoutBatch(fixture.dependencies, fixture.logger);
+	const alerts: unknown[] = [];
+	const result = await runDailyDoctorPayoutBatch(fixture.dependencies, fixture.logger, async (alert) => { alerts.push(alert); });
 	assert.equal(result.eligibleCount, 2);
 	assert.equal(result.errorCount, 1);
 	assert.equal(result.succeededCount, 1);
 	assert.equal(fixture.attempts.get("case-succeeds")?.status, "Succeeded");
 	assert.equal(fixture.errors.length, 1);
 	assert.match(fixture.logs[0] ?? "", /"outcome":"partial"/);
+	assert.equal(alerts.length, 0);
+});
+
+test("a fatal batch failure alerts once with aggregate counts and preserves the original failure", async () => {
+	const fixture = createBatchFixture({ items: [] });
+	fixture.dependencies.payments.listRetryablePayoutAttempts = async () => {
+		throw new Error("batch storage unavailable");
+	};
+	const alerts: unknown[] = [];
+	await assert.rejects(runDailyDoctorPayoutBatch(fixture.dependencies, fixture.logger, async (alert) => {
+		alerts.push(alert);
+	}), /batch storage unavailable/);
+	assert.equal(alerts.length, 1);
+	assert.deepEqual(alerts[0], {
+		event: "operator_job_failure",
+		jobName: "doctor_payout_batch",
+		outcome: "failure",
+		startedAt: JSON.parse(fixture.errors[0] ?? "{}").startedAt,
+		eligibleCount: 0,
+		succeededCount: 0,
+		pendingCount: 0,
+		failedCount: 0,
+		uncertainCount: 0,
+		errorCount: 0,
+		errorType: "Error",
+	});
+	assert.doesNotMatch(JSON.stringify(alerts), /batch storage unavailable|doctor-|case-/);
+
+	await assert.rejects(runDailyDoctorPayoutBatch(fixture.dependencies, fixture.logger, async () => {
+		throw new Error("delivery unavailable");
+	}), /batch storage unavailable/);
+	assert.equal(JSON.parse(fixture.errors.at(-1) ?? "{}").event, "operator_alert_delivery");
 });
 
 test("a Case without a durable attempt does not advance the payout checkpoint past itself", async () => {

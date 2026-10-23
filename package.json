@@ -10,7 +10,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsx --test src/modules/patients/service.test.ts src/modules/doctors/service.test.ts src/modules/admin/service.test.ts src/modules/admin/routes.test.ts src/modules/cases/service.test.ts src/modules/cases/routes.test.ts src/modules/payments/service.test.ts src/modules/payments/payout-batch-job.test.ts",
+    "test": "tsx --test src/modules/patients/service.test.ts src/modules/doctors/service.test.ts src/modules/admin/service.test.ts src/modules/admin/routes.test.ts src/modules/cases/service.test.ts src/modules/cases/routes.test.ts src/modules/payments/service.test.ts src/modules/payments/payout-batch-job.test.ts src/shared/operator-alert.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "prisma db seed"

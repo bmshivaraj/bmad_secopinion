@@ -30,6 +30,8 @@ services:
     environment:
       DATABASE_URL: postgresql://secopinion:secopinion@db:5432/secopinion
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      OPERATOR_ALERT_WEBHOOK_URL: ${OPERATOR_ALERT_WEBHOOK_URL:-}
+      OPERATOR_ALERT_AUTHORIZATION: ${OPERATOR_ALERT_AUTHORIZATION:-}
       NODE_ENV: development
     ports:
       - "3000:3000"

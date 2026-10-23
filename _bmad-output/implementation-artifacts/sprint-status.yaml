@@ -29,7 +29,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 09-23-2026 00:00
-last_updated: 10-23-2026 10:18
+last_updated: 10-23-2026 11:29
 project: secopinion
 project_key: NOKEY
 tracking_system: file-system
@@ -66,6 +66,6 @@ development_status:
   5-1-daily-sla-breach-detection-refund-pending: review
   5-2-admin-refund-approval-rejection: review
   5-3-daily-doctor-payout-batch: review
-  5-4-batch-job-logging-failure-alerting: backlog
+  5-4-batch-job-logging-failure-alerting: review
   5-5-admin-configures-case-fees-platform-fee-percentage: backlog
   epic-5-retrospective: optional

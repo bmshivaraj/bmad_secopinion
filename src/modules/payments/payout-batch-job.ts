@@ -3,6 +3,8 @@ import { casesService } from "../cases/service";
 import { doctorsService } from "../doctors/service";
 import { paymentsService, calculateDoctorPayout } from "./service";
 import type { PayoutAttempt } from "./domain";
+import { getSafeOperatorErrorType, sendOperatorAlert } from "../../shared/operator-alert";
+import type { OperatorAlert, OperatorAlertLogger, OperatorAlertSender } from "../../shared/operator-alert";
 
 const DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -43,6 +45,7 @@ function countAttempt(result: PayoutBatchResult, attempt: PayoutAttempt): void {
 export async function runDailyDoctorPayoutBatch(
 	dependencies: PayoutBatchDependencies = { cases: casesService, doctors: doctorsService, payments: paymentsService },
 	logger: PayoutBatchLogger = console,
+	alertSender: OperatorAlertSender = sendOperatorAlert,
 ): Promise<PayoutBatchResult> {
 	const startedAt = new Date();
 	const result: PayoutBatchResult = {
@@ -166,8 +169,26 @@ export async function runDailyDoctorPayoutBatch(
 			outcome: "failure",
 			startedAt: startedAt.toISOString(),
 			...result,
-			errorType: error instanceof Error ? error.name : "UnknownError",
+			errorType: getSafeOperatorErrorType(error),
 		}));
+		const alert: OperatorAlert = {
+			event: "operator_job_failure",
+			jobName: "doctor_payout_batch",
+			outcome: "failure",
+			startedAt: startedAt.toISOString(),
+			...result,
+			errorType: getSafeOperatorErrorType(error),
+		};
+		try {
+			await alertSender(alert, logger as OperatorAlertLogger);
+		} catch (alertError) {
+			logger.error(JSON.stringify({
+				event: "operator_alert_delivery",
+				outcome: "failure",
+				jobName: alert.jobName,
+				errorType: getSafeOperatorErrorType(alertError),
+			}));
+		}
 		throw error;
 	}
 

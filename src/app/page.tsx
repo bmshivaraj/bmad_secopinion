@@ -32,7 +32,7 @@ export default function HomePage() {
         <div className="home-hero-shade" aria-hidden="true" />
         <div className="home-hero-copy">
           <p className="home-eyebrow">Independent specialist review</p>
-          <h1 id="home-hero-heading">Before a big decision, get another point of view.</h1>
+          <h1 id="home-hero-heading">Because Your Health Deserves a Second Look</h1>
           <p className="home-hero-intro">
             When surgery or major treatment is recommended, an independent Doctor can review your reports and give you a written opinion to discuss with your treating Doctor.
           </p>

@@ -181,3 +181,11 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-5-admin-configures-case-fees-platform-fee-percentage.md`
   summary: Define Admin recovery behavior if PlatformSettings is absent while an Admin account still exists.
   evidence: The Admin settings GET reports unavailable settings and the editor cannot submit until GET succeeds; the normal seed creates both Admin and the fixed settings singleton, and no application API deletes the settings row, so confirm whether a supported bootstrap or recovery path must handle manual/incomplete database state.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-role-portals.md`
+  summary: Add a Patient registration-start page wired to the existing mobile OTP registration APIs.
+  evidence: The homepage can link to Patient sign-in and post-OTP password setup, but no public Patient registration-start page exists; creating that first-time onboarding flow is outside the homepage request.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-role-portals.md`
+  summary: Define and publish approved privacy and medical-record data-handling disclosures.
+  evidence: The homepage introduces sharing medical records, but there is no existing privacy/disclosure page and the PRD leaves formal privacy, retention, and compliance policies undefined; legal/product-approved language is needed before adding claims.

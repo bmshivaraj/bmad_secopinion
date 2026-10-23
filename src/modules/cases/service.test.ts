@@ -565,6 +565,15 @@ test("assigned Doctor submits one final Opinion, closes the Case, and exposes pa
 		nextCursor: null,
 	});
 	await assert.rejects(fixture.service.submitOpinion(VERIFIED_DOCTOR, record.id, "A second Opinion."), { code: "CASE_OPINION_CONFLICT" });
+
+	const nextRecord = await createAssignedCase(fixture);
+	await fixture.service.submitOpinion(VERIFIED_DOCTOR, nextRecord.id, "Opinion after fee update.");
+	assert.equal(fixture.cases.get(record.id)?.platformFeePercentAtClosure?.toFixed(2), "20.00");
+	assert.equal(fixture.cases.get(nextRecord.id)?.platformFeePercentAtClosure?.toFixed(2), "45.00");
+	assert.deepEqual((await fixture.service.listClosedOpinionsForPayout(null)).items.map(({ caseId, platformFeePercent }) => ({ caseId, platformFeePercent })), [
+		{ caseId: record.id, platformFeePercent: "20.00" },
+		{ caseId: nextRecord.id, platformFeePercent: "45.00" },
+	]);
 });
 
 test("Opinion from MoreInfoRequested closes its pause and request without claiming upload fulfillment", async () => {

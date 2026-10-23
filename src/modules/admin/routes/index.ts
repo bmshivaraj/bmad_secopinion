@@ -40,6 +40,10 @@ export async function parseAdminSpecialtyRequest(request: Request): Promise<{ na
 	return { name: body.name };
 }
 
+export async function parseAdminPlatformSettingsRequest(request: Request): Promise<unknown> {
+	return parseJsonBody(request);
+}
+
 async function parseJsonBody(request: Request): Promise<Record<string, unknown>> {
 	let body: unknown;
 	try {
@@ -75,13 +79,15 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	DOCTOR_VERIFICATION_ACCESS_DENIED: 403,
 	DOCTOR_NOT_FOUND: 404,
 	DOCTOR_VERIFICATION_CONFLICT: 409,
+	PLATFORM_SETTINGS_UNAVAILABLE: 503,
 	SPECIALTY_NAME_ALREADY_EXISTS: 409,
 };
 
 export function toAdminErrorResponse(error: unknown): NextResponse {
+	const headers = { "cache-control": "private, no-store" };
 	if (error instanceof DomainError) {
-		return NextResponse.json(fail(error.code, error.message), { status: STATUS_BY_ERROR_CODE[error.code] ?? 400 });
+		return NextResponse.json(fail(error.code, error.message), { status: STATUS_BY_ERROR_CODE[error.code] ?? 400, headers });
 	}
 	console.error("[admin] unexpected error", error);
-	return NextResponse.json(fail("INTERNAL_ERROR", "An unexpected error occurred."), { status: 500 });
+	return NextResponse.json(fail("INTERNAL_ERROR", "An unexpected error occurred."), { status: 500, headers });
 }

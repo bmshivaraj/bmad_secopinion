@@ -32,6 +32,10 @@ export class PlatformSettingsUnavailableError extends DomainError {
 	}
 }
 
+export class PlatformSettingsValidationError extends DomainError {
+	readonly code = "VALIDATION_ERROR";
+}
+
 export class AdminSessionAuthorizationError extends DomainError {
 	readonly code = "ADMIN_SESSION_UNAUTHORIZED";
 

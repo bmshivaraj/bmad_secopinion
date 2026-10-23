@@ -544,6 +544,19 @@ a {
   border-top: 1px solid var(--line);
 }
 
+.admin-settings-section {
+  margin-top: 48px;
+  padding-top: 30px;
+  border-top: 1px solid var(--line);
+}
+
+.admin-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
 .admin-specialty-form {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -735,6 +748,10 @@ a {
   }
 
   .admin-specialty-form {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-settings-grid {
     grid-template-columns: 1fr;
   }
 

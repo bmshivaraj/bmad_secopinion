@@ -25,6 +25,12 @@ interface Specialty {
   name: string;
 }
 
+interface PlatformSettings {
+  standardCaseFee: string;
+  urgentCaseFee: string;
+  platformFeePercent: string;
+}
+
 interface UnclassifiedCase {
   id: string;
   affectedBodyArea: string;
@@ -81,12 +87,20 @@ function formatFileSize(sizeBytes: number): string {
 export default function AdminPage() {
   const [applications, setApplications] = useState<Application[]>([]);
   const [specialties, setSpecialties] = useState<Specialty[]>([]);
+  const [platformSettings, setPlatformSettings] = useState<PlatformSettings | null>(null);
+  const [platformSettingsDraft, setPlatformSettingsDraft] = useState<PlatformSettings>({
+    standardCaseFee: "",
+    urgentCaseFee: "",
+    platformFeePercent: "",
+  });
   const [unclassifiedCases, setUnclassifiedCases] = useState<UnclassifiedCase[]>([]);
   const [assignmentCases, setAssignmentCases] = useState<AssignmentCase[]>([]);
   const [refundPendingCases, setRefundPendingCases] = useState<RefundPendingCase[]>([]);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSpecialtiesLoading, setIsSpecialtiesLoading] = useState(true);
+  const [isPlatformSettingsLoading, setIsPlatformSettingsLoading] = useState(true);
+  const [isSavingPlatformSettings, setIsSavingPlatformSettings] = useState(false);
   const [isCasesLoading, setIsCasesLoading] = useState(true);
   const [isAssignmentQueueLoading, setIsAssignmentQueueLoading] = useState(true);
   const [isRefundPendingLoading, setIsRefundPendingLoading] = useState(true);
@@ -103,6 +117,8 @@ export default function AdminPage() {
   const [notice, setNotice] = useState("");
   const [specialtyError, setSpecialtyError] = useState("");
   const [specialtyNotice, setSpecialtyNotice] = useState("");
+  const [platformSettingsError, setPlatformSettingsError] = useState("");
+  const [platformSettingsNotice, setPlatformSettingsNotice] = useState("");
   const [casesError, setCasesError] = useState("");
   const [casesNotice, setCasesNotice] = useState("");
   const [assignmentError, setAssignmentError] = useState("");
@@ -162,6 +178,36 @@ export default function AdminPage() {
         if (isCurrent) setSpecialtyError("Unable to connect. Please try again.");
       } finally {
         if (isCurrent) setIsSpecialtiesLoading(false);
+      }
+    }
+
+    async function loadPlatformSettings() {
+      setIsPlatformSettingsLoading(true);
+      setPlatformSettingsError("");
+      try {
+        const response = await fetch("/api/admin/platform-settings", { cache: "no-store" });
+        const result = await response.json() as ApiResult<PlatformSettings>;
+        if (!isCurrent) return;
+        if (response.status === 401 || response.status === 403) {
+          setIsAuthenticated(false);
+          setPlatformSettings(null);
+          return;
+        }
+        if (!response.ok || result.error || !result.data) {
+          setPlatformSettings(null);
+          setPlatformSettingsError(result.error?.message ?? "Unable to load platform settings.");
+          return;
+        }
+        setIsAuthenticated(true);
+        setPlatformSettings(result.data);
+        setPlatformSettingsDraft(result.data);
+      } catch {
+        if (isCurrent) {
+          setPlatformSettings(null);
+          setPlatformSettingsError("Unable to connect. Please try again.");
+        }
+      } finally {
+        if (isCurrent) setIsPlatformSettingsLoading(false);
       }
     }
 
@@ -248,6 +294,7 @@ export default function AdminPage() {
 
     void loadQueue();
     void loadSpecialties();
+    void loadPlatformSettings();
     void loadUnclassifiedCases();
     void loadAssignmentCases();
     void loadRefundPendingCases();
@@ -452,6 +499,37 @@ export default function AdminPage() {
     }
   }
 
+  async function handleSavePlatformSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isPlatformSettingsLoading || isSavingPlatformSettings) return;
+    setPlatformSettingsError("");
+    setPlatformSettingsNotice("");
+    setIsSavingPlatformSettings(true);
+    try {
+      const response = await fetch("/api/admin/platform-settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(platformSettingsDraft),
+      });
+      const result = await response.json() as ApiResult<PlatformSettings>;
+      if (response.status === 401 || response.status === 403) {
+        setIsAuthenticated(false);
+        return;
+      }
+      if (!response.ok || result.error || !result.data) {
+        setPlatformSettingsError(result.error?.message ?? "Unable to save platform settings.");
+        return;
+      }
+      setPlatformSettings(result.data);
+      setPlatformSettingsDraft(result.data);
+      setPlatformSettingsNotice("Platform settings saved.");
+    } catch {
+      setPlatformSettingsError("Unable to confirm the save. Reload settings before retrying.");
+    } finally {
+      setIsSavingPlatformSettings(false);
+    }
+  }
+
   async function handleLogout() {
     try {
       const response = await fetch("/api/admin/logout", { method: "POST" });
@@ -465,6 +543,10 @@ export default function AdminPage() {
       setNotice("");
       setSpecialtyError("");
       setSpecialtyNotice("");
+      setPlatformSettings(null);
+      setPlatformSettingsDraft({ standardCaseFee: "", urgentCaseFee: "", platformFeePercent: "" });
+      setPlatformSettingsError("");
+      setPlatformSettingsNotice("");
       setCasesError("");
       setCasesNotice("");
       setAssignmentError("");
@@ -822,6 +904,79 @@ export default function AdminPage() {
               {specialties.map((specialty) => <li key={specialty.id}>{specialty.name}</li>)}
             </ul>
           )}
+        </section>
+
+        <section className="admin-settings-section" aria-labelledby="admin-settings-heading">
+          <div className="admin-heading-row">
+            <div>
+              <p className="admin-eyebrow">Pricing</p>
+              <h1 id="admin-settings-heading">Case fees</h1>
+            </div>
+          </div>
+          {platformSettingsNotice && <p className="admin-notice" role="status">{platformSettingsNotice}</p>}
+          {platformSettingsError && <p className="admin-error" role="alert">{platformSettingsError}</p>}
+          {isPlatformSettingsLoading ? (
+            <p className="admin-muted" role="status">Loading platform settings...</p>
+          ) : platformSettingsError && !platformSettings ? (
+            <div className="admin-empty-state">
+              <h2>Pricing settings unavailable</h2>
+              <p>The current fee values could not be loaded.</p>
+              <button className="admin-signout" type="button" onClick={() => setRefreshKey((value) => value + 1)}>Retry loading settings</button>
+            </div>
+          ) : platformSettings ? (
+            <form className="admin-settings-form" onSubmit={handleSavePlatformSettings}>
+              <div className="admin-settings-grid">
+                <div className="field-group">
+                  <label htmlFor="standard-case-fee">Standard Case fee (INR)</label>
+                  <input
+                    id="standard-case-fee"
+                    type="number"
+                    min="0.01"
+                    max="99999999.99"
+                    step="0.01"
+                    inputMode="decimal"
+                    required
+                    value={platformSettingsDraft.standardCaseFee}
+                    onChange={(event) => setPlatformSettingsDraft((current) => ({ ...current, standardCaseFee: event.target.value }))}
+                    disabled={isSavingPlatformSettings}
+                  />
+                </div>
+                <div className="field-group">
+                  <label htmlFor="urgent-case-fee">Urgent Case fee (INR)</label>
+                  <input
+                    id="urgent-case-fee"
+                    type="number"
+                    min="0.01"
+                    max="99999999.99"
+                    step="0.01"
+                    inputMode="decimal"
+                    required
+                    value={platformSettingsDraft.urgentCaseFee}
+                    onChange={(event) => setPlatformSettingsDraft((current) => ({ ...current, urgentCaseFee: event.target.value }))}
+                    disabled={isSavingPlatformSettings}
+                  />
+                </div>
+                <div className="field-group">
+                  <label htmlFor="platform-fee-percent">Platform Fee (%)</label>
+                  <input
+                    id="platform-fee-percent"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    inputMode="decimal"
+                    required
+                    value={platformSettingsDraft.platformFeePercent}
+                    onChange={(event) => setPlatformSettingsDraft((current) => ({ ...current, platformFeePercent: event.target.value }))}
+                    disabled={isSavingPlatformSettings}
+                  />
+                </div>
+              </div>
+              <button className="admin-decision admin-decision-approve" type="submit" disabled={isSavingPlatformSettings || isPlatformSettingsLoading}>
+                {isSavingPlatformSettings ? "Saving..." : "Save pricing"}
+              </button>
+            </form>
+          ) : null}
         </section>
       </section>
     </main>

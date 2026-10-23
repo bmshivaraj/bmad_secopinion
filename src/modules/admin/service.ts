@@ -1,7 +1,13 @@
 import argon2 from "argon2";
+import { Prisma } from "../../generated/prisma/client";
 import { signAuthToken, type AuthContext } from "../../shared/auth-context";
 import { doctorsService } from "../doctors/service";
-import { AdminAccessDeniedError, AdminInvalidCredentialsError, PlatformSettingsUnavailableError } from "./domain";
+import {
+	AdminAccessDeniedError,
+	AdminInvalidCredentialsError,
+	PlatformSettingsUnavailableError,
+	PlatformSettingsValidationError,
+} from "./domain";
 import { adminRepository } from "./repository";
 
 const MAX_PASSWORD_LENGTH = 1024;
@@ -9,7 +15,7 @@ const MAX_LOGIN_FAILURES = 20;
 const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const DUMMY_PASSWORD_HASH = argon2.hash("secopinion-invalid-admin-dummy", { type: argon2.argon2id });
 
-type AdminRepository = Pick<typeof adminRepository, "findByUsername"> & Partial<Pick<typeof adminRepository, "getPlatformSettings">>;
+type AdminRepository = Pick<typeof adminRepository, "findByUsername"> & Partial<Pick<typeof adminRepository, "getPlatformSettings" | "updatePlatformSettings">>;
 type ReviewDoctorsService = Pick<
 	typeof doctorsService,
 	"listPendingApplications" | "setVerificationStatus" | "listActiveSpecialties" | "createSpecialty"
@@ -21,6 +27,53 @@ export function createAdminService(
 ) {
 	const loginFailures = new Map<string, number[]>();
 	let loginFailuresSinceCleanup = 0;
+
+	function parseSettingsAmount(value: unknown, field: string): Prisma.Decimal {
+		if (typeof value !== "string" || !/^\d+(?:\.\d{1,2})?$/.test(value)) {
+			throw new PlatformSettingsValidationError(`${field} must be a decimal amount with no more than two decimal places.`);
+		}
+		return new Prisma.Decimal(value);
+	}
+
+	function parsePlatformSettings(input: unknown) {
+		if (typeof input !== "object" || input === null || Array.isArray(input)) {
+			throw new PlatformSettingsValidationError("Platform settings must be a JSON object.");
+		}
+		const values = input as Record<string, unknown>;
+		const standardCaseFee = parseSettingsAmount(values.standardCaseFee, "standardCaseFee");
+		const urgentCaseFee = parseSettingsAmount(values.urgentCaseFee, "urgentCaseFee");
+		const platformFeePercent = parseSettingsAmount(values.platformFeePercent, "platformFeePercent");
+
+		if (standardCaseFee.lte(0) || standardCaseFee.gt("99999999.99")) {
+			throw new PlatformSettingsValidationError("standardCaseFee must be greater than 0 and fit in a currency amount.");
+		}
+		if (urgentCaseFee.lte(0) || urgentCaseFee.gt("99999999.99")) {
+			throw new PlatformSettingsValidationError("urgentCaseFee must be greater than 0 and fit in a currency amount.");
+		}
+		if (platformFeePercent.lt(0) || platformFeePercent.gt(100)) {
+			throw new PlatformSettingsValidationError("platformFeePercent must be between 0 and 100, inclusive.");
+		}
+
+		return { standardCaseFee, urgentCaseFee, platformFeePercent };
+	}
+
+	async function readPlatformSettings() {
+		const settings = await repository.getPlatformSettings?.();
+		if (!settings) throw new PlatformSettingsUnavailableError();
+		return {
+			standardCaseFee: settings.standardCaseFee,
+			urgentCaseFee: settings.urgentCaseFee,
+			platformFeePercent: settings.platformFeePercent,
+		};
+	}
+
+	function formatPlatformSettings(settings: Awaited<ReturnType<typeof readPlatformSettings>>) {
+		return {
+			standardCaseFee: settings.standardCaseFee.toFixed(2),
+			urgentCaseFee: settings.urgentCaseFee.toFixed(2),
+			platformFeePercent: settings.platformFeePercent.toFixed(2),
+		};
+	}
 
 	function assertAdmin(caller: AuthContext): void {
 		if (caller.role !== "admin") throw new AdminAccessDeniedError();
@@ -98,13 +151,25 @@ export function createAdminService(
 		},
 
 		async getPlatformSettings() {
-			const settings = await repository.getPlatformSettings?.();
-			if (!settings) throw new PlatformSettingsUnavailableError();
-			return {
+			return readPlatformSettings();
+		},
+
+		async getAdminPlatformSettings(caller: AuthContext) {
+			assertAdmin(caller);
+			return formatPlatformSettings(await readPlatformSettings());
+		},
+
+		async updatePlatformSettings(caller: AuthContext, input: unknown) {
+			assertAdmin(caller);
+			const values = parsePlatformSettings(input);
+			const update = repository.updatePlatformSettings;
+			if (!update) throw new PlatformSettingsUnavailableError();
+			const settings = await update(values);
+			return formatPlatformSettings({
 				standardCaseFee: settings.standardCaseFee,
 				urgentCaseFee: settings.urgentCaseFee,
 				platformFeePercent: settings.platformFeePercent,
-			};
+			});
 		},
 
 		async decideApplication(

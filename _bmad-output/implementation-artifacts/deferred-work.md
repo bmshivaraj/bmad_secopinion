@@ -177,3 +177,7 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-3-daily-doctor-payout-batch.md`
   summary: Configure and verify a real PaymentProvider payout adapter before live money movement.
   evidence: The registered provider is `MockPaymentProvider`, which returns simulated idempotent success and logs a mock payout; a real provider integration and credentials are not configured in this repository.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-5-admin-configures-case-fees-platform-fee-percentage.md`
+  summary: Define Admin recovery behavior if PlatformSettings is absent while an Admin account still exists.
+  evidence: The Admin settings GET reports unavailable settings and the editor cannot submit until GET succeeds; the normal seed creates both Admin and the fixed settings singleton, and no application API deletes the settings row, so confirm whether a supported bootstrap or recovery path must handle manual/incomplete database state.

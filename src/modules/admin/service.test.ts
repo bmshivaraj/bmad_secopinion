@@ -173,3 +173,117 @@ test("Admin seed hashes the password and rotates the fixed account on rerun", as
   assert.equal(await argon2.verify(second.update.passwordHash, "SecondPass2"), true);
   assert.equal(await argon2.verify(second.update.passwordHash, "FirstPass1"), false);
 });
+
+test("Admin settings updates validate every field before one atomic repository write", async () => {
+  const caller = { userId: accountId, role: "admin" as const };
+  let persisted = {
+    standardCaseFee: new Prisma.Decimal("1000.00"),
+    urgentCaseFee: new Prisma.Decimal("2000.00"),
+    platformFeePercent: new Prisma.Decimal("20.00"),
+  };
+  const writes: unknown[] = [];
+  const service = createAdminService({
+    async findByUsername() { return null; },
+    async getPlatformSettings() { return { ...persisted, id: randomUUID(), createdAt: now, updatedAt: now }; },
+    async updatePlatformSettings(values) {
+      writes.push(values);
+      persisted = values;
+      return { ...persisted, id: randomUUID(), createdAt: now, updatedAt: now };
+    },
+  });
+
+  assert.deepEqual(await service.updatePlatformSettings(caller, {
+    standardCaseFee: "1250.75",
+    urgentCaseFee: "2500.25",
+    platformFeePercent: "0.00",
+  }), {
+    standardCaseFee: "1250.75",
+    urgentCaseFee: "2500.25",
+    platformFeePercent: "0.00",
+  });
+  assert.equal(writes.length, 1);
+  assert.ok((writes[0] as { standardCaseFee: Prisma.Decimal }).standardCaseFee instanceof Prisma.Decimal);
+
+  for (const invalid of [
+    { standardCaseFee: "0.00", urgentCaseFee: "1.00", platformFeePercent: "20.00" },
+    { standardCaseFee: "1.001", urgentCaseFee: "1.00", platformFeePercent: "20.00" },
+    { standardCaseFee: "1.00", urgentCaseFee: "-1.00", platformFeePercent: "20.00" },
+    { standardCaseFee: "1.00", urgentCaseFee: "1.00", platformFeePercent: "100.01" },
+    { standardCaseFee: "1.00", urgentCaseFee: "1.00", platformFeePercent: "1e1" },
+  ]) {
+    await assert.rejects(service.updatePlatformSettings(caller, invalid), { code: "VALIDATION_ERROR" });
+  }
+  assert.equal(writes.length, 1);
+  assert.deepEqual(await service.getAdminPlatformSettings(caller), {
+    standardCaseFee: "1250.75",
+    urgentCaseFee: "2500.25",
+    platformFeePercent: "0.00",
+  });
+});
+
+test("Admin settings accept exact maximum fee and inclusive platform-fee endpoints", async () => {
+  const caller = { userId: accountId, role: "admin" as const };
+  let persisted = {
+    standardCaseFee: new Prisma.Decimal("1000.00"),
+    urgentCaseFee: new Prisma.Decimal("2000.00"),
+    platformFeePercent: new Prisma.Decimal("20.00"),
+  };
+  const service = createAdminService({
+    async findByUsername() { return null; },
+    async updatePlatformSettings(values) {
+      persisted = values;
+      return { ...values, id: randomUUID(), createdAt: now, updatedAt: now };
+    },
+  });
+
+  assert.deepEqual(await service.updatePlatformSettings(caller, {
+    standardCaseFee: "99999999.99",
+    urgentCaseFee: "0.01",
+    platformFeePercent: "100.00",
+  }), {
+    standardCaseFee: "99999999.99",
+    urgentCaseFee: "0.01",
+    platformFeePercent: "100.00",
+  });
+  assert.deepEqual(await service.updatePlatformSettings(caller, {
+    standardCaseFee: "0.01",
+    urgentCaseFee: "99999999.99",
+    platformFeePercent: "0.00",
+  }), {
+    standardCaseFee: "0.01",
+    urgentCaseFee: "99999999.99",
+    platformFeePercent: "0.00",
+  });
+  await assert.rejects(service.updatePlatformSettings(caller, {
+    standardCaseFee: "100000000.00",
+    urgentCaseFee: "1.00",
+    platformFeePercent: "20.00",
+  }), { code: "VALIDATION_ERROR" });
+  assert.equal(persisted.standardCaseFee.toFixed(2), "0.01");
+});
+
+test("Admin settings are available only to an Admin and failed persistence preserves the prior values", async () => {
+  const existing = {
+    standardCaseFee: new Prisma.Decimal("1000.00"),
+    urgentCaseFee: new Prisma.Decimal("2000.00"),
+    platformFeePercent: new Prisma.Decimal("20.00"),
+  };
+  const service = createAdminService({
+    async findByUsername() { return null; },
+    async getPlatformSettings() { return { ...existing, id: randomUUID(), createdAt: now, updatedAt: now }; },
+    async updatePlatformSettings() { throw new Error("database unavailable"); },
+  });
+  const caller = { userId: randomUUID(), role: "doctor" as const };
+  await assert.rejects(service.getAdminPlatformSettings(caller), AdminAccessDeniedError);
+  await assert.rejects(service.updatePlatformSettings(caller, {
+    standardCaseFee: "1500.00", urgentCaseFee: "2500.00", platformFeePercent: "25.00",
+  }), AdminAccessDeniedError);
+  await assert.rejects(service.updatePlatformSettings({ userId: accountId, role: "admin" }, {
+    standardCaseFee: "1500.00", urgentCaseFee: "2500.00", platformFeePercent: "25.00",
+  }), /database unavailable/);
+  assert.deepEqual(existing, {
+    standardCaseFee: new Prisma.Decimal("1000.00"),
+    urgentCaseFee: new Prisma.Decimal("2000.00"),
+    platformFeePercent: new Prisma.Decimal("20.00"),
+  });
+});

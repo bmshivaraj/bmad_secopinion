@@ -12,6 +12,7 @@ const { doctorsRepository } = await import("../doctors/repository");
 const { POST: loginPost } = await import("../../app/api/admin/login/route");
 const { GET: queueGet } = await import("../../app/api/admin/verification-queue/route");
 const { GET: specialtiesGet, POST: specialtiesPost } = await import("../../app/api/admin/specialties/route");
+const { GET: platformSettingsGet, PUT: platformSettingsPut } = await import("../../app/api/admin/platform-settings/route");
 const { GET: doctorSpecialtiesGet } = await import("../../app/api/doctors/specialties/route");
 const { PATCH: verificationPatch } = await import("../../app/api/admin/doctors/[doctorId]/verification/route");
 
@@ -251,5 +252,89 @@ test("Admin Specialty API lists, adds, validates, and denies non-Admin callers",
   } finally {
     doctorsRepository.listActiveSpecialties = originals.listActiveSpecialties;
     doctorsRepository.createSpecialty = originals.createSpecialty;
+  }
+});
+
+test("Admin platform settings API reads and atomically updates settings with private Admin-only access", async () => {
+  const originals = {
+    getPlatformSettings: adminRepository.getPlatformSettings,
+    updatePlatformSettings: adminRepository.updatePlatformSettings,
+  };
+  let values = {
+    standardCaseFee: new (await import("../../generated/prisma/client")).Prisma.Decimal("1000.00"),
+    urgentCaseFee: new (await import("../../generated/prisma/client")).Prisma.Decimal("2000.00"),
+    platformFeePercent: new (await import("../../generated/prisma/client")).Prisma.Decimal("20.00"),
+  };
+  let writeCount = 0;
+  let readCount = 0;
+  const adminCookie = `admin_session=${signAuthToken({ userId: adminId, role: "admin" })}`;
+  const endpoint = "http://localhost/api/admin/platform-settings";
+  const read = (cookie?: string) => platformSettingsGet(new Request(endpoint, { headers: cookie ? { cookie } : {} }));
+  const update = (body: unknown, cookie = adminCookie) => platformSettingsPut(new Request(endpoint, {
+    method: "PUT",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+
+  adminRepository.getPlatformSettings = async () => {
+    readCount += 1;
+    return { ...values, id: "settings", createdAt: new Date(), updatedAt: new Date() };
+  };
+  adminRepository.updatePlatformSettings = async (next) => {
+    writeCount += 1;
+    values = next;
+    return { ...values, id: "settings", createdAt: new Date(), updatedAt: new Date() };
+  };
+  try {
+    const current = await read(adminCookie);
+    assert.equal(current.status, 200);
+    assert.equal(current.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual((await current.json() as { data: unknown }).data, {
+      standardCaseFee: "1000.00", urgentCaseFee: "2000.00", platformFeePercent: "20.00",
+    });
+
+    const saved = await update({ standardCaseFee: "1500.50", urgentCaseFee: "3000.25", platformFeePercent: "12.50" });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual((await saved.json() as { data: unknown }).data, {
+      standardCaseFee: "1500.50", urgentCaseFee: "3000.25", platformFeePercent: "12.50",
+    });
+    assert.equal(writeCount, 1);
+
+    for (const cookie of [undefined, "admin_session=invalid-token"]) {
+      const deniedRead = await read(cookie);
+      assert.equal(deniedRead.status, 401);
+      assert.equal(deniedRead.headers.get("cache-control"), "private, no-store");
+      assert.equal((await update({ standardCaseFee: "1600.00", urgentCaseFee: "3100.00", platformFeePercent: "10.00" }, cookie ?? "")).status, 401);
+    }
+    for (const role of ["doctor", "patient"] as const) {
+      const cookie = `admin_session=${signAuthToken({ userId: randomUUID(), role })}`;
+      const deniedRead = await read(cookie);
+      assert.equal(deniedRead.status, 403);
+      assert.equal(deniedRead.headers.get("cache-control"), "private, no-store");
+      assert.equal((await update({ standardCaseFee: "1600.00", urgentCaseFee: "3100.00", platformFeePercent: "10.00" }, cookie)).status, 403);
+    }
+    for (const body of [
+      { standardCaseFee: "0", urgentCaseFee: "1", platformFeePercent: "20" },
+      { standardCaseFee: "1.001", urgentCaseFee: "1", platformFeePercent: "20" },
+      { standardCaseFee: "1", urgentCaseFee: "1", platformFeePercent: "100.01" },
+    ]) {
+      const invalid = await update(body);
+      assert.equal(invalid.status, 400);
+    }
+    const malformed = await platformSettingsPut(new Request(endpoint, {
+      method: "PUT", headers: { cookie: adminCookie, "content-type": "application/json" }, body: "{",
+    }));
+    assert.equal(malformed.status, 400);
+    assert.equal(writeCount, 1);
+    assert.equal(readCount, 1);
+    assert.deepEqual(values, {
+      standardCaseFee: new (await import("../../generated/prisma/client")).Prisma.Decimal("1500.50"),
+      urgentCaseFee: new (await import("../../generated/prisma/client")).Prisma.Decimal("3000.25"),
+      platformFeePercent: new (await import("../../generated/prisma/client")).Prisma.Decimal("12.50"),
+    });
+  } finally {
+    adminRepository.getPlatformSettings = originals.getPlatformSettings;
+    adminRepository.updatePlatformSettings = originals.updatePlatformSettings;
   }
 });

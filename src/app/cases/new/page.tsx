@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { AccountProfileLink } from "../../components/account-profile-link";
 
 interface ApiEnvelope<T> {
 	data: T | null;
@@ -328,7 +329,7 @@ export default function NewCasePage() {
 				</Link>
 				<nav className="patient-case-nav" aria-label="Patient account">
 					<Link className="case-account-link" href="/cases">My Cases</Link>
-					<Link className="case-account-link" href="/login">Patient account</Link>
+					<AccountProfileLink role="patient" />
 				</nav>
 			</header>
 

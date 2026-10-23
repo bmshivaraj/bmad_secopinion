@@ -5,6 +5,7 @@ import { doctorsService } from "../doctors/service";
 import {
 	AdminAccessDeniedError,
 	AdminInvalidCredentialsError,
+	AdminProfileNotFoundError,
 	PlatformSettingsUnavailableError,
 	PlatformSettingsValidationError,
 } from "./domain";
@@ -15,7 +16,7 @@ const MAX_LOGIN_FAILURES = 20;
 const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 const DUMMY_PASSWORD_HASH = argon2.hash("secopinion-invalid-admin-dummy", { type: argon2.argon2id });
 
-type AdminRepository = Pick<typeof adminRepository, "findByUsername"> & Partial<Pick<typeof adminRepository, "getPlatformSettings" | "updatePlatformSettings">>;
+type AdminRepository = Pick<typeof adminRepository, "findByUsername"> & Partial<Pick<typeof adminRepository, "findById" | "getPlatformSettings" | "updatePlatformSettings">>;
 type ReviewDoctorsService = Pick<
 	typeof doctorsService,
 	"listPendingApplications" | "setVerificationStatus" | "listActiveSpecialties" | "createSpecialty"
@@ -102,6 +103,13 @@ export function createAdminService(
 	}
 
 	return {
+		async getOwnProfile(caller: AuthContext) {
+			assertAdmin(caller);
+			const profile = await repository.findById?.(caller.userId);
+			if (!profile) throw new AdminProfileNotFoundError();
+			return { displayName: profile.username, username: profile.username };
+		},
+
 		async login(username: string, password: string): Promise<{ adminId: string; token: string }> {
 			const normalizedUsername = typeof username === "string" ? username.trim().toLowerCase() : "";
 			if (!normalizedUsername || normalizedUsername.length > 100 || !password || password.length > MAX_PASSWORD_LENGTH) {

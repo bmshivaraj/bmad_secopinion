@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { AccountProfileLink } from "../../components/account-profile-link";
 
 interface ApiResult<T> {
 	data: T | null;
@@ -259,7 +260,7 @@ export default function DoctorQueuePage() {
 					SecOpinion
 				</Link>
 				<nav className="doctor-queue-nav" aria-label="Doctor account">
-					<Link className="case-account-link" href="/doctors/profile">Payout details</Link>
+					<AccountProfileLink role="doctor" />
 					<button className="admin-signout" type="button" onClick={() => void signOut()}>Sign out</button>
 				</nav>
 			</header>

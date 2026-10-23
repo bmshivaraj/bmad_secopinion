@@ -19,6 +19,8 @@ import {
 	DoctorNotFoundError,
 	DoctorPayoutAccessDeniedError,
 	DoctorPayoutProfileNotFoundError,
+	DoctorProfileAccessDeniedError,
+	DoctorProfileNotFoundError,
 	DoctorVerificationAccessDeniedError,
 	DoctorVerificationConflictError,
 	InvalidCredentialsError,
@@ -40,6 +42,7 @@ import {
 	type DoctorApplication,
 	type DoctorCredentialRecord,
 	type DoctorDirectoryEntry,
+	type DoctorIdentityProfile,
 	type DoctorSummary,
 	type SpecialtySummary,
 } from "./domain";
@@ -65,6 +68,7 @@ type DoctorsRepository = Pick<
 	| "findByMobileNumber"
 	| "findByUsername"
 	| "findById"
+	| "findIdentityProfileById"
 	| "findVerifiedDoctorSpecialtyIds"
 	| "listVerifiedDoctors"
 	| "findPayoutProfile"
@@ -426,6 +430,20 @@ export function createDoctorsService(
 			const profile = await repository.findPayoutProfile(caller.userId);
 			if (!profile) throw new DoctorPayoutProfileNotFoundError();
 			return profile;
+		},
+
+		async getOwnIdentityProfile(caller: AuthContext) {
+			if (caller.role !== "doctor") throw new DoctorProfileAccessDeniedError();
+		const doctor: DoctorIdentityProfile | null = await repository.findIdentityProfileById(caller.userId);
+			if (!doctor) throw new DoctorProfileNotFoundError();
+			return {
+				displayName: doctor.fullName,
+				fullName: doctor.fullName,
+				username: doctor.username,
+				mobileNumber: doctor.mobileNumber,
+				verificationStatus: doctor.verificationStatus,
+				specialties: doctor.specialties,
+			};
 		},
 
 		getPayoutDestination(doctorId: string): Promise<{ upiId: string | null } | null> {

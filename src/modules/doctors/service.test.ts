@@ -27,6 +27,7 @@ const { POST: startRegistrationPost } = await import("../../app/api/doctors/regi
 const { POST: verifyRegistrationPost } = await import("../../app/api/doctors/register/verify/route");
 const { POST: submitApplicationPost } = await import("../../app/api/doctors/register/submit/route");
 const { GET: getPayoutProfile, PATCH: patchPayoutProfile } = await import("../../app/api/doctors/profile/upi/route");
+const { GET: getIdentityProfile } = await import("../../app/api/doctors/profile/account/route");
 const { parseDoctorApplicationRequest } = await import("./routes");
 
 const DEFAULT_SPECIALTIES: SpecialtySummary[] = [
@@ -164,6 +165,16 @@ function createFixture(options: {
     },
     async findById(doctorId: string): Promise<DoctorAccount | null> {
       return [...applications.values()].find((doctor) => doctor.id === doctorId) ?? null;
+    },
+    async findIdentityProfileById(doctorId: string) {
+      const doctor = applications.get(doctorId);
+      return doctor ? {
+        fullName: doctor.fullName,
+        username: doctor.username,
+        mobileNumber: doctor.mobileNumber,
+        verificationStatus: doctor.verificationStatus,
+        specialties: doctor.specialties.map(({ name }) => name).sort((left, right) => left.localeCompare(right)),
+      } : null;
     },
     async findVerifiedDoctorSpecialtyIds(doctorId: string): Promise<string[] | null> {
       const doctor = applications.get(doctorId);
@@ -764,6 +775,26 @@ test("payout profile reads and updates are Doctor-owner scoped", async () => {
   );
 });
 
+test("Doctor identity profile returns safe account fields only", async () => {
+  const fixture = createFixture();
+  const applicant = await authorizeApplicant(fixture);
+  const application = await fixture.service.submitApplication(applicant.registrationToken, validInput());
+  const profile = await fixture.service.getOwnIdentityProfile({ userId: application.doctorId, role: "doctor" });
+  const { mobileNumber, ...safeProfile } = profile;
+  assert.ok(mobileNumber);
+  assert.deepEqual(safeProfile, {
+    displayName: application.fullName,
+    fullName: application.fullName,
+    username: application.username,
+    verificationStatus: "Pending",
+    specialties: DEFAULT_SPECIALTIES.map(({ name }) => name).sort((left, right) => left.localeCompare(right)),
+  });
+  assert.equal("passwordHash" in profile, false);
+  assert.equal("upiId" in profile, false);
+  await assert.rejects(fixture.service.getOwnIdentityProfile({ userId: application.doctorId, role: "patient" }), { code: "DOCTOR_PROFILE_ACCESS_DENIED" });
+  await assert.rejects(fixture.service.getOwnIdentityProfile({ userId: randomUUID(), role: "doctor" }), { code: "DOCTOR_PROFILE_NOT_FOUND" });
+});
+
 test("payout destination service rejects malformed stored UPI IDs", async () => {
   const originalFind = doctorsRepository.findPayoutProfile;
   doctorsRepository.findPayoutProfile = async (doctorId) => doctorId === "legacy-doctor" ? { upiId: "not-a-valid-upi" } : null;
@@ -829,6 +860,49 @@ test("payout profile API authenticates the Doctor session and uses its owner ID"
   } finally {
     doctorsRepository.findPayoutProfile = originalFind;
     doctorsRepository.updateUpiId = originalUpdate;
+  }
+});
+
+test("Doctor identity profile API is owner-scoped, private, and rejects other roles", async () => {
+  const originalGetIdentityProfile = doctorsService.getOwnIdentityProfile;
+  let requestedBy = "";
+  doctorsService.getOwnIdentityProfile = async (caller) => {
+    requestedBy = caller.userId;
+    return {
+      displayName: "Dr. Profile",
+      fullName: "Dr. Profile",
+      username: "doctor_profile",
+      mobileNumber: "15550000001",
+      verificationStatus: "Verified",
+      specialties: ["Cardiology", "Neurology"],
+    };
+  };
+  try {
+    const doctorToken = signAuthToken({ userId: "doctor-profile-id", role: "doctor" });
+    const response = await getIdentityProfile(new Request("http://localhost/api/doctors/profile/account", {
+      headers: { cookie: `doctor_session=${doctorToken}` },
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    assert.equal(requestedBy, "doctor-profile-id");
+    assert.deepEqual((await response.json() as { data: unknown }).data, {
+      displayName: "Dr. Profile",
+      fullName: "Dr. Profile",
+      username: "doctor_profile",
+      mobileNumber: "15550000001",
+      verificationStatus: "Verified",
+      specialties: ["Cardiology", "Neurology"],
+    });
+
+    const patientToken = signAuthToken({ userId: "patient-profile-id", role: "patient" });
+    const forbidden = await getIdentityProfile(new Request("http://localhost/api/doctors/profile/account", {
+      headers: { cookie: `doctor_session=${patientToken}` },
+    }));
+    assert.equal(forbidden.status, 403);
+    const anonymous = await getIdentityProfile(new Request("http://localhost/api/doctors/profile/account"));
+    assert.equal(anonymous.status, 401);
+  } finally {
+    doctorsService.getOwnIdentityProfile = originalGetIdentityProfile;
   }
 });
 

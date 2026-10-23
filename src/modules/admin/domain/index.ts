@@ -44,6 +44,14 @@ export class AdminSessionAuthorizationError extends DomainError {
 	}
 }
 
+export class AdminProfileNotFoundError extends DomainError {
+	readonly code = "ADMIN_PROFILE_NOT_FOUND";
+
+	constructor() {
+		super("The Admin profile was not found.");
+	}
+}
+
 export class InvalidAdminRequestError extends DomainError {
 	readonly code = "VALIDATION_ERROR";
 }

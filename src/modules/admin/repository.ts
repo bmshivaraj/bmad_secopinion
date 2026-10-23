@@ -16,6 +16,10 @@ export const adminRepository = {
 		return prisma.adminAccount.findUnique({ where: { username } });
 	},
 
+	async findById(adminId: string): Promise<AdminAccount | null> {
+		return prisma.adminAccount.findUnique({ where: { id: adminId } });
+	},
+
 	async getPlatformSettings() {
 		return prisma.platformSettings.findUnique({ where: { id: PLATFORM_SETTINGS_ID } });
 	},

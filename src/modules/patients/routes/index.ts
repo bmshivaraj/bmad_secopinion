@@ -1,7 +1,8 @@
 // Patients module route-handler logic, wired into src/app/api routes starting Story 1.2.
 import { NextResponse } from "next/server";
 import { DomainError, fail } from "../../../shared/api-envelope";
-import { GUARDIAN_RELATIONSHIPS, InvalidRequestError, type GuardianRegistrationInput } from "../domain";
+import { verifyAuthToken, type AuthContext } from "../../../shared/auth-context";
+import { GUARDIAN_RELATIONSHIPS, InvalidRequestError, PatientSessionAuthorizationError, type GuardianRegistrationInput } from "../domain";
 
 const MOBILE_NUMBER_PATTERN = /^\+?[0-9]{10,15}$/;
 
@@ -113,6 +114,18 @@ export function readRequestCookie(request: Request, name: string): string | null
   return null;
 }
 
+export function requirePatientContext(request: Request): AuthContext {
+  const token = readRequestCookie(request, PATIENT_SESSION_COOKIE);
+  if (!token) throw new PatientSessionAuthorizationError();
+  try {
+    const caller = verifyAuthToken(token);
+    if (caller.role !== "patient") throw new PatientSessionAuthorizationError();
+    return caller;
+  } catch {
+    throw new PatientSessionAuthorizationError();
+  }
+}
+
 async function parseJsonBody(request: Request): Promise<Record<string, unknown>> {
   let body: unknown;
   try {
@@ -137,6 +150,8 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
   GUARDIAN_DECLARATION_INVALID: 400,
   USERNAME_ALREADY_TAKEN: 409,
   INVALID_CREDENTIALS: 401,
+  SESSION_UNAUTHORIZED: 401,
+  PATIENT_PROFILE_NOT_FOUND: 404,
 };
 
 // Maps a typed domain error to an ApiFailure + HTTP status (AD-9: business

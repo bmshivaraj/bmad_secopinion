@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
+import { AccountProfileLink } from "../components/account-profile-link";
 import type { ApiResult, CaseDocument, PatientCase } from "./case-types";
 
 function displayStatus(status: string): string {
@@ -96,7 +97,7 @@ export default function PatientCasesPage() {
 				</Link>
 				<nav className="patient-case-nav" aria-label="Patient account">
 					<Link className="case-account-link" href="/cases/new">New Case</Link>
-					<Link className="case-account-link" href="/login?returnTo=%2Fcases">Patient account</Link>
+					<AccountProfileLink role="patient" />
 				</nav>
 			</header>
 

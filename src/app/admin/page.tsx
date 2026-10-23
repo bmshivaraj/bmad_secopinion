@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import { AccountProfileLink } from "../components/account-profile-link";
 
 interface Credential {
   id: string;
@@ -588,6 +589,7 @@ export default function AdminPage() {
     <main className="admin-page">
       <header className="admin-topbar">
         <a className="admin-brand" href="/">SecOpinion <span>Admin</span></a>
+        <AccountProfileLink role="admin" />
         <button className="admin-signout" type="button" onClick={handleLogout}>Sign out</button>
       </header>
       <section className="admin-content">

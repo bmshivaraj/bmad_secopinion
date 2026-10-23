@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
+import { AccountProfileLink } from "../../components/account-profile-link";
 
 interface ApiResult<T> {
 	data: T | null;
@@ -10,6 +11,15 @@ interface ApiResult<T> {
 
 interface PayoutProfile {
 	upiId: string | null;
+}
+
+interface DoctorIdentityProfile {
+	displayName: string;
+	fullName: string;
+	username: string;
+	mobileNumber: string;
+	verificationStatus: "Pending" | "Verified" | "Rejected";
+	specialties: string[];
 }
 
 interface PayoutHistoryEntry {
@@ -23,6 +33,9 @@ interface PayoutHistoryEntry {
 
 export default function DoctorProfilePage() {
 	const [upiId, setUpiId] = useState("");
+	const [identity, setIdentity] = useState<DoctorIdentityProfile | null>(null);
+	const [isIdentityLoading, setIsIdentityLoading] = useState(true);
+	const [identityError, setIdentityError] = useState("");
 	const [isLoading, setIsLoading] = useState(true);
 	const [isSubmitting, setIsSubmitting] = useState(false);
 	const [isUnauthorized, setIsUnauthorized] = useState(false);
@@ -33,6 +46,33 @@ export default function DoctorProfilePage() {
 	const [historyError, setHistoryError] = useState("");
 	const [error, setError] = useState("");
 	const [notice, setNotice] = useState("");
+
+	useEffect(() => {
+		let isActive = true;
+		fetch("/api/doctors/profile/account", { cache: "no-store" })
+			.then(async (response) => ({ response, result: await response.json() as ApiResult<DoctorIdentityProfile> }))
+			.then(({ response, result }) => {
+				if (!isActive) return;
+				if (response.status === 401 || response.status === 403) {
+					setIsUnauthorized(true);
+					return;
+				}
+				if (!response.ok || result.error || !result.data) {
+					setIdentityError(result.error?.message ?? "Unable to load account identity.");
+					return;
+				}
+				setIdentity(result.data);
+			})
+			.catch(() => {
+				if (isActive) setIdentityError("Unable to connect. Please try again.");
+			})
+			.finally(() => {
+				if (isActive) setIsIdentityLoading(false);
+			});
+		return () => {
+			isActive = false;
+		};
+	}, []);
 
 	useEffect(() => {
 		let isActive = true;
@@ -137,6 +177,24 @@ export default function DoctorProfilePage() {
 						<span className="brand-mark" aria-hidden="true">S</span>
 						SecOpinion
 					</Link>
+					<div className="doctor-profile-toolbar">
+						<AccountProfileLink role="doctor" />
+						<Link className="case-account-link" href="/doctors/queue">Case queue</Link>
+					</div>
+					<section className="doctor-identity-summary" aria-labelledby="doctor-identity-heading">
+						<h2 id="doctor-identity-heading">Account identity</h2>
+						{isIdentityLoading ? <p className="field-hint" role="status">Loading account details...</p>
+							: identityError ? <p className="auth-error" role="alert">{identityError}</p>
+								: identity ? (
+									<dl className="account-profile-fields">
+										<div><dt>Full name</dt><dd>{identity.fullName}</dd></div>
+										<div><dt>Username</dt><dd>{identity.username}</dd></div>
+										<div><dt>Mobile number</dt><dd>{identity.mobileNumber}</dd></div>
+										<div><dt>Verification status</dt><dd>{identity.verificationStatus}</dd></div>
+										<div><dt>Specialties</dt><dd>{identity.specialties.length > 0 ? identity.specialties.join(" · ") : "None listed"}</dd></div>
+									</dl>
+								) : null}
+					</section>
 					<p className="auth-eyebrow">Doctor settings</p>
 					<h2>Payout destination</h2>
 					<p className="auth-intro">Your current UPI ID: <strong>{isLoading ? "Loading..." : upiId || "Not set"}</strong></p>

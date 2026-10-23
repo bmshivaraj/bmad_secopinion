@@ -14,6 +14,14 @@ export interface DoctorDirectoryEntry {
 	specialties: string[];
 }
 
+export interface DoctorIdentityProfile {
+	fullName: string;
+	username: string;
+	mobileNumber: string;
+	verificationStatus: DoctorVerificationStatus;
+	specialties: string[];
+}
+
 export interface DoctorCredentialRecord {
 	id: string;
 	doctorId: string;
@@ -82,6 +90,22 @@ export class DoctorPayoutProfileNotFoundError extends DomainError {
 
 	constructor() {
 		super("The Doctor payout profile was not found.");
+	}
+}
+
+export class DoctorProfileAccessDeniedError extends DomainError {
+	readonly code = "DOCTOR_PROFILE_ACCESS_DENIED";
+
+	constructor() {
+		super("A Doctor session is required to access account identity.");
+	}
+}
+
+export class DoctorProfileNotFoundError extends DomainError {
+	readonly code = "DOCTOR_PROFILE_NOT_FOUND";
+
+	constructor() {
+		super("The Doctor profile was not found.");
 	}
 }
 

@@ -8,8 +8,10 @@ process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopini
 process.env.JWT_SECRET ??= "admin-routes-test-secret";
 
 const { adminRepository } = await import("./repository");
+const { adminService } = await import("./service");
 const { doctorsRepository } = await import("../doctors/repository");
 const { POST: loginPost } = await import("../../app/api/admin/login/route");
+const { GET: profileGet } = await import("../../app/api/admin/profile/route");
 const { GET: queueGet } = await import("../../app/api/admin/verification-queue/route");
 const { GET: specialtiesGet, POST: specialtiesPost } = await import("../../app/api/admin/specialties/route");
 const { GET: platformSettingsGet, PUT: platformSettingsPut } = await import("../../app/api/admin/platform-settings/route");
@@ -336,5 +338,37 @@ test("Admin platform settings API reads and atomically updates settings with pri
   } finally {
     adminRepository.getPlatformSettings = originals.getPlatformSettings;
     adminRepository.updatePlatformSettings = originals.updatePlatformSettings;
+  }
+});
+
+test("Admin profile API derives identity from its session and rejects non-Admins", async () => {
+  const originalGetOwnProfile = adminService.getOwnProfile;
+  let requestedBy = "";
+  adminService.getOwnProfile = async (caller) => {
+    requestedBy = caller.userId;
+    return { displayName: "review-admin", username: "review-admin" };
+  };
+  try {
+    const adminToken = signAuthToken({ userId: adminId, role: "admin" });
+    const response = await profileGet(new Request("http://localhost/api/admin/profile", {
+      headers: { cookie: `admin_session=${adminToken}` },
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    assert.equal(requestedBy, adminId);
+    assert.deepEqual((await response.json() as { data: unknown }).data, {
+      displayName: "review-admin",
+      username: "review-admin",
+    });
+
+    const anonymous = await profileGet(new Request("http://localhost/api/admin/profile"));
+    assert.equal(anonymous.status, 401);
+    const doctorToken = signAuthToken({ userId: doctorId, role: "doctor" });
+    const wrongRole = await profileGet(new Request("http://localhost/api/admin/profile", {
+      headers: { cookie: `admin_session=${doctorToken}` },
+    }));
+    assert.equal(wrongRole.status, 403);
+  } finally {
+    adminService.getOwnProfile = originalGetOwnProfile;
   }
 });

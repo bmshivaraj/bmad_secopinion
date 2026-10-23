@@ -7,14 +7,15 @@ import type { Patient } from "./domain";
 process.env.DATABASE_URL ??= "postgresql://user:password@localhost:5432/secopinion_test";
 process.env.JWT_SECRET ??= "patient-auth-test-secret";
 
-const { createPatientsService } = await import("./service");
+const { createPatientsService, patientsService } = await import("./service");
 const { patientsRepository } = await import("./repository");
-const { signPatientPasswordSetupToken, verifyAuthToken } = await import("../../shared/auth-context");
+const { signAuthToken, signPatientPasswordSetupToken, verifyAuthToken } = await import("../../shared/auth-context");
 const { POST: startRegistrationPost } = await import("../../app/api/patients/register/start/route");
 const { POST: verifyRegistrationPost } = await import("../../app/api/patients/register/verify/route");
 const { POST: passwordSetupPost } = await import("../../app/api/patients/password/setup/route");
 const { POST: patientLoginPost } = await import("../../app/api/patients/login/route");
 const { POST: patientLogoutPost } = await import("../../app/api/patients/logout/route");
+const { GET: patientProfileGet } = await import("../../app/api/patients/profile/route");
 
 function createFixture(options: { expiresAt?: Date; validCode?: string; createError?: unknown } = {}) {
   const patients = new Map<string, Patient>();
@@ -693,5 +694,52 @@ test("registration route returns typed validation and duplicate error responses"
     assert.equal(duplicateBody.error.code, "MOBILE_ALREADY_REGISTERED");
   } finally {
     patientsRepository.findByMobileNumber = originalFindByMobileNumber;
+  }
+});
+
+test("Patient profile returns only the session owner's safe identity fields", async () => {
+  const fixture = createFixture();
+  const patient = await createRegisteredPatient(fixture);
+  patient.username = "patient_profile";
+
+  assert.deepEqual(await fixture.service.getOwnProfile({ userId: patient.id, role: "patient" }), {
+    displayName: "patient_profile",
+    username: "patient_profile",
+    mobileNumber: patient.mobileNumber,
+  });
+  await assert.rejects(fixture.service.getOwnProfile({ userId: patient.id, role: "doctor" }), { code: "SESSION_UNAUTHORIZED" });
+  await assert.rejects(fixture.service.getOwnProfile({ userId: randomUUID(), role: "patient" }), { code: "PATIENT_PROFILE_NOT_FOUND" });
+});
+
+test("Patient profile API is authenticated, private, and derives identity from its session", async () => {
+  const originalGetOwnProfile = patientsService.getOwnProfile;
+  let requestedBy = "";
+  patientsService.getOwnProfile = async (caller) => {
+    requestedBy = caller.userId;
+    return { displayName: "profile_patient", username: "profile_patient", mobileNumber: "15550000001" };
+  };
+  try {
+    const patientToken = signAuthToken({ userId: "patient-profile-id", role: "patient" });
+    const response = await patientProfileGet(new Request("http://localhost/api/patients/profile", {
+      headers: { cookie: `patient_session=${patientToken}` },
+    }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    assert.equal(requestedBy, "patient-profile-id");
+    assert.deepEqual((await response.json() as { data: unknown }).data, {
+      displayName: "profile_patient",
+      username: "profile_patient",
+      mobileNumber: "15550000001",
+    });
+
+    const anonymous = await patientProfileGet(new Request("http://localhost/api/patients/profile"));
+    assert.equal(anonymous.status, 401);
+    const doctorToken = signAuthToken({ userId: "doctor-profile-id", role: "doctor" });
+    const wrongRole = await patientProfileGet(new Request("http://localhost/api/patients/profile", {
+      headers: { cookie: `patient_session=${doctorToken}` },
+    }));
+    assert.equal(wrongRole.status, 401);
+  } finally {
+    patientsService.getOwnProfile = originalGetOwnProfile;
   }
 });

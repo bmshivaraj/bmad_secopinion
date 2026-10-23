@@ -54,7 +54,10 @@ function createFixture() {
       return { id: "specialty-new", name };
     },
   };
-  const service = createAdminService({ async findByUsername(username) { return username === account.username ? account : null; } }, doctors);
+  const service = createAdminService({
+    async findByUsername(username) { return username === account.username ? account : null; },
+    async findById(id) { return id === account.id ? account : null; },
+  }, doctors);
   return { service, calls };
 }
 
@@ -286,4 +289,14 @@ test("Admin settings are available only to an Admin and failed persistence prese
     urgentCaseFee: new Prisma.Decimal("2000.00"),
     platformFeePercent: new Prisma.Decimal("20.00"),
   });
+});
+
+test("Admin profile returns only the session owner's public identity", async () => {
+  const { service } = createFixture();
+  assert.deepEqual(await service.getOwnProfile({ userId: accountId, role: "admin" }), {
+    displayName: account.username,
+    username: account.username,
+  });
+  await assert.rejects(service.getOwnProfile({ userId: accountId, role: "doctor" }), { code: "ADMIN_ACCESS_DENIED" });
+  await assert.rejects(service.getOwnProfile({ userId: randomUUID(), role: "admin" }), { code: "ADMIN_PROFILE_NOT_FOUND" });
 });

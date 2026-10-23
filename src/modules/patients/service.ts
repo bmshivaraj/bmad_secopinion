@@ -3,13 +3,15 @@
 // read Patients data through functions exported from this file, never by
 // importing repository.ts or domain/ directly. Implemented starting Story 1.2.
 import argon2 from "argon2";
-import { signAuthToken, verifyPatientPasswordSetupToken } from "../../shared/auth-context";
+import { signAuthToken, verifyPatientPasswordSetupToken, type AuthContext } from "../../shared/auth-context";
 import { otpProvider } from "../../shared/otp-provider";
 import type { OtpProvider } from "../../shared/otp-provider";
 import {
   InvalidCredentialsError,
   InvalidGuardianDeclarationError,
   InvalidRequestError,
+  PatientProfileNotFoundError,
+  PatientSessionAuthorizationError,
   GUARDIAN_RELATIONSHIPS,
   isOtpRequestRateLimited,
   MobileAlreadyRegisteredError,
@@ -141,6 +143,17 @@ export function createPatientsService(
   }
 
   return {
+    async getOwnProfile(caller: AuthContext) {
+      if (caller.role !== "patient") throw new PatientSessionAuthorizationError();
+      const patient = await repository.findById(caller.userId);
+      if (!patient) throw new PatientProfileNotFoundError();
+      return {
+        displayName: patient.username ?? "Patient",
+        username: patient.username,
+        mobileNumber: patient.mobileNumber,
+      };
+    },
+
     async startRegistration(mobileNumber: string): Promise<{ otpId: string; expiresAt: Date }> {
       const normalizedMobileNumber = normalizeMobileNumber(mobileNumber);
       const existing = await repository.findByMobileNumber(normalizedMobileNumber);

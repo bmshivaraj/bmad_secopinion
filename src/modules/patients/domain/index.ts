@@ -38,6 +38,22 @@ export class InvalidRequestError extends DomainError {
   readonly code = "VALIDATION_ERROR";
 }
 
+export class PatientSessionAuthorizationError extends DomainError {
+  readonly code = "SESSION_UNAUTHORIZED";
+
+  constructor() {
+    super("A valid Patient session is required.");
+  }
+}
+
+export class PatientProfileNotFoundError extends DomainError {
+  readonly code = "PATIENT_PROFILE_NOT_FOUND";
+
+  constructor() {
+    super("The Patient profile was not found.");
+  }
+}
+
 export class InvalidGuardianDeclarationError extends DomainError {
   readonly code = "GUARDIAN_DECLARATION_INVALID";
   constructor() {

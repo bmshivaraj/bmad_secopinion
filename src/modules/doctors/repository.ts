@@ -4,6 +4,7 @@ import type {
 	DoctorAccount,
 	DoctorApplication,
 	DoctorCredentialRecord,
+	DoctorIdentityProfile,
 	DoctorVerificationStatus,
 	SpecialtySummary,
 } from "./domain";
@@ -51,6 +52,26 @@ export const doctorsRepository = {
 	async findById(doctorId: string): Promise<DoctorAccount | null> {
 		const record = await prisma.doctor.findUnique({ where: { id: doctorId } });
 		return record ? mapAccount(record) : null;
+	},
+
+	async findIdentityProfileById(doctorId: string): Promise<DoctorIdentityProfile | null> {
+		const record = await prisma.doctor.findUnique({
+			where: { id: doctorId },
+			select: {
+				fullName: true,
+				username: true,
+				mobileNumber: true,
+				verificationStatus: true,
+				specialties: { select: { specialty: { select: { name: true } } } },
+			},
+		});
+		return record ? {
+			fullName: record.fullName,
+			username: record.username,
+			mobileNumber: record.mobileNumber,
+			verificationStatus: record.verificationStatus,
+			specialties: record.specialties.map(({ specialty }) => specialty.name).sort((left, right) => left.localeCompare(right)),
+		} : null;
 	},
 
 	async findVerifiedDoctorSpecialtyIds(doctorId: string): Promise<string[] | null> {

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AccountProfileLink } from "../../components/account-profile-link";
 import type { ApiResult, PatientCase } from "../case-types";
 
 function displayStatus(status: string): string {
@@ -58,6 +59,7 @@ export default function PatientCaseDetailPage() {
 				<nav className="patient-case-nav" aria-label="Patient account">
 					<Link className="case-account-link" href="/cases">Your Cases</Link>
 					<Link className="case-account-link" href="/cases/new">New Case</Link>
+					<AccountProfileLink role="patient" />
 				</nav>
 			</header>
 

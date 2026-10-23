@@ -11,12 +11,13 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
-  const [returnTo, setReturnTo] = useState("/");
+  const [returnTo, setReturnTo] = useState("/cases");
 
   useEffect(() => {
     const searchParams = new URLSearchParams(window.location.search);
     setSetupComplete(searchParams.get("setup") === "complete");
-    setReturnTo(searchParams.get("returnTo") === "/cases" ? "/cases" : "/");
+    const requestedReturnTo = searchParams.get("returnTo");
+    if (requestedReturnTo === "/cases") setReturnTo(requestedReturnTo);
   }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {

@@ -2,47 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
-
-interface ApiResult<T> {
-	data: T | null;
-	error: { message: string } | null;
-}
-
-interface CaseDocument {
-	id: string;
-	fileName: string;
-	contentType: string;
-	sizeBytes: number;
-	createdAt: string;
-}
-
-interface CaseDocumentRequest {
-	id: string;
-	note: string;
-	createdAt: string;
-	fulfilledAt: string | null;
-	closedAt: string | null;
-}
-
-interface CaseOpinion {
-	text: string;
-	createdAt: string;
-}
-
-interface PatientCase {
-	id: string;
-	affectedBodyArea: string;
-	condition: string;
-	status: string;
-	urgencyTier: "Standard" | "Urgent" | null;
-	submittedAt: string | null;
-	updatedAt: string;
-	refundConfirmedAt: string | null;
-	refundedAmount: string | null;
-	documents: CaseDocument[];
-	documentRequests: CaseDocumentRequest[];
-	opinion: CaseOpinion | null;
-}
+import type { ApiResult, CaseDocument, PatientCase } from "./case-types";
 
 function displayStatus(status: string): string {
 	return status.replace(/([a-z])([A-Z])/g, "$1 $2");
@@ -178,6 +138,12 @@ export default function PatientCasesPage() {
 									</div>
 								</header>
 								<p className="patient-case-condition">{caseRecord.condition}</p>
+								{caseRecord.doctor && (
+									<p className="patient-case-doctor">
+										<strong>{caseRecord.doctor.fullName}</strong>
+										{caseRecord.doctor.specialties.length > 0 && <span>{caseRecord.doctor.specialties.join(" · ")}</span>}
+									</p>
+								)}
 								<p className="patient-case-submitted">Submitted {displayDate(caseRecord.submittedAt)}</p>
 								{caseRecord.refundConfirmedAt && (
 									<p className="case-message case-message-success" role="status">
@@ -225,6 +191,9 @@ export default function PatientCasesPage() {
 										</button>
 									</form>
 								)}
+								<div className="patient-case-actions">
+									<Link className="case-button case-button-secondary" href={`/cases/${encodeURIComponent(caseRecord.id)}`}>View details</Link>
+								</div>
 							</article>
 						))}
 					</div>

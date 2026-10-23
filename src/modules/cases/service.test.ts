@@ -1019,6 +1019,19 @@ test("Doctor request persists a trimmed note and open SLA pause for Patient and 
 	assert.deepEqual(await fixture.service.listPatientCases(OTHER_PATIENT), []);
 });
 
+test("Patient Case list and detail expose only the assigned Doctor's public display fields", async () => {
+	const fixture = createFixture();
+	const record = await createAssignedCase(fixture);
+	const detail = await fixture.service.getPatientCase(PATIENT, record.id);
+	assert.deepEqual(detail.doctor, { fullName: "Dr. Visible", specialties: ["Cardiology"] });
+	assert.deepEqual((await fixture.service.listPatientCases(PATIENT))[0].doctor, detail.doctor);
+	await assert.rejects(fixture.service.getPatientCase(OTHER_PATIENT, record.id), { code: "CASE_NOT_FOUND" });
+	await assert.rejects(fixture.service.getPatientCase(DOCTOR, record.id), { code: "SESSION_UNAUTHORIZED" });
+
+	const draft = await fixture.service.saveDraft(PATIENT, VALID_INPUT);
+	await assert.rejects(fixture.service.getPatientCase(PATIENT, draft.id), { code: "CASE_NOT_FOUND" });
+});
+
 test("Document requests reject invalid notes, wrong Doctors, unverified Doctors, and duplicate active requests", async () => {
 	const fixture = createFixture({ includeAdditionalDoctors: true });
 	const record = await createAssignedCase(fixture);

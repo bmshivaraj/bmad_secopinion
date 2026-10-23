@@ -31,6 +31,7 @@ const { PATCH: patchDoctorSelectionRoute } = await import("../../app/api/cases/[
 const { POST: postCaseSubmitRoute } = await import("../../app/api/cases/[caseId]/submit/route");
 const { GET: getCaseFeesRoute } = await import("../../app/api/cases/fees/route");
 const { GET: getPatientCasesRoute } = await import("../../app/api/cases/route");
+const { GET: getPatientCaseRoute } = await import("../../app/api/cases/[caseId]/route");
 const { POST: postDocumentRequestRoute } = await import("../../app/api/cases/[caseId]/document-requests/route");
 const { POST: postCaseOpinionRoute } = await import("../../app/api/cases/[caseId]/opinion/route");
 const { GET: getAdminCaseOpinionRoute } = await import("../../app/api/admin/cases/[caseId]/opinion/route");
@@ -329,9 +330,14 @@ test("document request and Patient Case list routes enforce role sessions and pr
 			id: "case-owned",
 			affectedBodyArea: "Knee",
 			condition: "Pain",
+			recommendation: "Review",
+			additionalDetails: "",
 			status: "MoreInfoRequested",
 			urgencyTier: "Standard",
+			chargedAmount: "1000.00",
+			doctor: null,
 			submittedAt: "2026-10-22T12:00:00.000Z",
+			createdAt: "2026-10-22T12:00:00.000Z",
 			updatedAt: "2026-10-22T12:01:00.000Z",
 			refundConfirmedAt: null,
 			refundedAmount: null,
@@ -385,6 +391,60 @@ test("document request and Patient Case list routes enforce role sessions and pr
 		assert.equal(wrongRoleList.status, 401);
 	} finally {
 		Object.assign(casesService, originals);
+	}
+});
+
+test("Patient Case detail route is authenticated, owner-scoped, and private", async () => {
+	const originalGetPatientCase = casesService.getPatientCase;
+	let requestedBy = "";
+	let requestedCaseId = "";
+	casesService.getPatientCase = async (caller, caseId) => {
+		requestedBy = caller.userId;
+		requestedCaseId = caseId;
+		return {
+			id: caseId,
+			affectedBodyArea: "Knee",
+			condition: "Pain",
+			recommendation: "Review",
+			additionalDetails: "",
+			status: "UnderReview",
+			urgencyTier: "Standard",
+			chargedAmount: "1000.00",
+			doctor: { fullName: "Dr. Visible", specialties: ["Orthopedics"] },
+			submittedAt: "2026-10-22T12:00:00.000Z",
+			createdAt: "2026-10-22T12:00:00.000Z",
+			updatedAt: "2026-10-22T12:00:00.000Z",
+			refundConfirmedAt: null,
+			refundedAmount: null,
+			documents: [],
+			documentRequests: [],
+			opinion: null,
+		};
+	};
+	try {
+		const patientToken = signAuthToken({ userId: "patient-1", role: "patient" });
+		const context = { params: Promise.resolve({ caseId: "case-owned" }) };
+		const response = await getPatientCaseRoute(new Request("http://localhost/api/cases/case-owned", {
+			headers: { cookie: `patient_session=${patientToken}` },
+		}), context);
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("cache-control"), "private, no-store");
+		assert.equal(requestedBy, "patient-1");
+		assert.equal(requestedCaseId, "case-owned");
+		assert.deepEqual((await response.json() as { data: { doctor: unknown } }).data.doctor, {
+			fullName: "Dr. Visible",
+			specialties: ["Orthopedics"],
+		});
+
+		const unauthorized = await getPatientCaseRoute(new Request("http://localhost/api/cases/case-owned"), context);
+		assert.equal(unauthorized.status, 401);
+		const doctorToken = signAuthToken({ userId: "doctor-1", role: "doctor" });
+		const wrongRole = await getPatientCaseRoute(new Request("http://localhost/api/cases/case-owned", {
+			headers: { cookie: `patient_session=${doctorToken}` },
+		}), context);
+		assert.equal(wrongRole.status, 401);
+	} finally {
+		casesService.getPatientCase = originalGetPatientCase;
 	}
 });
 

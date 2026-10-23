@@ -67,6 +67,7 @@ type DoctorsService = Pick<
 	typeof doctorsService,
 	"listVerifiedDoctors" | "getVerifiedDoctor" | "getVerifiedDoctorSpecialtyIds" | "listActiveSpecialties"
 >;
+type VerifiedDoctorDirectoryEntry = Awaited<ReturnType<DoctorsService["listVerifiedDoctors"]>>[number];
 type AdminSettingsService = Pick<typeof adminService, "getPlatformSettings">;
 type PaymentsService = Pick<typeof paymentsService,
 	"findAttemptByCaseId" | "prepareAttempt" | "chargeAttempt" | "refundCapturedPayment"
@@ -182,6 +183,28 @@ function publicOpinion(opinion: CaseOpinionRecord) {
 	return {
 		text: opinion.text,
 		createdAt: opinion.createdAt.toISOString(),
+	};
+}
+
+function publicPatientCase(record: CaseRecord, doctor: VerifiedDoctorDirectoryEntry | null) {
+	return {
+		id: record.id,
+		affectedBodyArea: record.affectedBodyArea,
+		condition: record.condition,
+		recommendation: record.recommendation,
+		additionalDetails: record.additionalDetails,
+		status: record.status,
+		urgencyTier: record.urgencyTier,
+		chargedAmount: record.chargedAmount?.toFixed(2) ?? null,
+		doctor: doctor ? { fullName: doctor.fullName, specialties: doctor.specialties } : null,
+		submittedAt: record.submittedAt?.toISOString() ?? null,
+		createdAt: record.createdAt.toISOString(),
+		updatedAt: record.updatedAt.toISOString(),
+		refundConfirmedAt: record.refundConfirmedAt?.toISOString() ?? null,
+		refundedAmount: record.refundConfirmedAt ? record.chargedAmount?.toFixed(2) ?? null : null,
+		documents: record.documents.map(publicDocument),
+		documentRequests: (record.documentRequests ?? []).map(publicDocumentRequest),
+		opinion: record.opinion ? publicOpinion(record.opinion) : null,
 	};
 }
 
@@ -895,23 +918,27 @@ export function createCasesService(
 			return publicDocumentRequest(request);
 		},
 
+		async getPatientCase(caller: AuthContext, caseId: string) {
+			assertPatient(caller);
+			const record = await repository.findById(caseId);
+			if (!record || record.patientId !== caller.userId || record.status === "Draft") throw new CaseNotFoundError();
+			const doctor = record.doctorId
+				? (await doctors.listVerifiedDoctors()).find(({ id }) => id === record.doctorId) ?? null
+				: null;
+			return publicPatientCase(record, doctor);
+		},
+
 		async listPatientCases(caller: AuthContext) {
 			assertPatient(caller);
 			const records = await repository.listPatientCases(caller.userId);
-			return records.map((record) => ({
-				id: record.id,
-				affectedBodyArea: record.affectedBodyArea,
-				condition: record.condition,
-				status: record.status,
-				urgencyTier: record.urgencyTier,
-				submittedAt: record.submittedAt?.toISOString() ?? null,
-				updatedAt: record.updatedAt.toISOString(),
-				refundConfirmedAt: record.refundConfirmedAt?.toISOString() ?? null,
-				refundedAmount: record.refundConfirmedAt ? record.chargedAmount?.toFixed(2) ?? null : null,
-				documents: record.documents.map(publicDocument),
-				documentRequests: (record.documentRequests ?? []).map(publicDocumentRequest),
-				opinion: record.opinion ? publicOpinion(record.opinion) : null,
-			}));
+			const doctorIds = new Set(records.flatMap(({ doctorId }) => doctorId ? [doctorId] : []));
+			const doctorsById = new Map((doctorIds.size > 0 ? await doctors.listVerifiedDoctors() : [])
+				.filter(({ id }) => doctorIds.has(id))
+				.map((doctor) => [doctor.id, doctor]));
+			return records.map((record) => publicPatientCase(
+				record,
+				record.doctorId ? doctorsById.get(record.doctorId) ?? null : null,
+			));
 		},
 	};
 }

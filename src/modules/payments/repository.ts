@@ -33,4 +33,50 @@ export const paymentsRepository = {
 		});
 		return this.findAttemptByCaseId(caseId);
 	},
+
+	async prepareRefund(caseId: string, idempotencyKey: string): Promise<PaymentAttempt | null> {
+		await prisma.paymentAttempt.updateMany({
+			where: { caseId, status: "Succeeded", transactionId: { not: null }, refundIdempotencyKey: null },
+			data: { refundIdempotencyKey: idempotencyKey, refundStatus: "Pending", refundProviderError: null },
+		});
+		return this.findAttemptByCaseId(caseId);
+	},
+
+	async retryFailedRefund(caseId: string, idempotencyKey: string): Promise<PaymentAttempt | null> {
+		await prisma.paymentAttempt.updateMany({
+			where: { caseId, status: "Succeeded", refundStatus: "Failed" },
+			data: {
+				refundIdempotencyKey: idempotencyKey,
+				refundStatus: "Pending",
+				refundTransactionId: null,
+				refundProviderError: null,
+			},
+		});
+		return this.findAttemptByCaseId(caseId);
+	},
+
+	async markRefundFailed(
+		caseId: string,
+		idempotencyKey: string,
+		status: "Failed" | "Uncertain",
+		providerError: string,
+	): Promise<PaymentAttempt | null> {
+		await prisma.paymentAttempt.updateMany({
+			where: { caseId, refundIdempotencyKey: idempotencyKey, refundStatus: { in: ["Pending", "Failed", "Uncertain"] } },
+			data: { refundStatus: status, refundProviderError: providerError.slice(0, 500) },
+		});
+		return this.findAttemptByCaseId(caseId);
+	},
+
+	async markRefundSucceeded(
+		caseId: string,
+		idempotencyKey: string,
+		refundTransactionId: string | null,
+	): Promise<PaymentAttempt | null> {
+		await prisma.paymentAttempt.updateMany({
+			where: { caseId, refundIdempotencyKey: idempotencyKey, refundStatus: { in: ["Pending", "Failed", "Uncertain"] } },
+			data: { refundStatus: "Succeeded", refundTransactionId, refundProviderError: null },
+		});
+		return this.findAttemptByCaseId(caseId);
+	},
 };

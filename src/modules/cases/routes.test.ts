@@ -10,6 +10,7 @@ const {
 	parseCaseAssignmentRequest,
 	parseCaseDraftRequest,
 	parseCaseDocumentRequest,
+	parseRefundDecisionRequest,
 	parseCaseOpinionRequest,
 	parseCaseSubmissionRequest,
 	parseDoctorSelectionRequest,
@@ -34,8 +35,10 @@ const { POST: postDocumentRequestRoute } = await import("../../app/api/cases/[ca
 const { POST: postCaseOpinionRoute } = await import("../../app/api/cases/[caseId]/opinion/route");
 const { GET: getAdminCaseOpinionRoute } = await import("../../app/api/admin/cases/[caseId]/opinion/route");
 const { GET: getAdminRefundCasesRoute } = await import("../../app/api/admin/cases/refunds/route");
+const { POST: postAdminRefundDecisionRoute } = await import("../../app/api/admin/cases/refunds/[caseId]/route");
 const { casesService } = await import("./service");
-const { CaseAccessDeniedError, CaseAssignmentVersionConflictError } = await import("./domain");
+const { CaseAccessDeniedError, CaseAssignmentVersionConflictError, CaseRefundDecisionConflictError } = await import("./domain");
+const { PaymentRefundFailedError } = await import("../payments/domain");
 const { signAuthToken } = await import("../../shared/auth-context");
 
 test("draft parser accepts the approved fields and rejects malformed JSON shapes", async () => {
@@ -330,6 +333,8 @@ test("document request and Patient Case list routes enforce role sessions and pr
 			urgencyTier: "Standard",
 			submittedAt: "2026-10-22T12:00:00.000Z",
 			updatedAt: "2026-10-22T12:01:00.000Z",
+			refundConfirmedAt: null,
+			refundedAmount: null,
 			documents: [],
 			documentRequests: [{ id: "request-1", note: "Please attach a scan.", createdAt: "2026-10-22T12:00:00.000Z", fulfilledAt: null, closedAt: null }],
 			opinion: null,
@@ -497,6 +502,7 @@ test("Admin RefundPending route returns captured amounts privately and rejects n
 			doctorId: null,
 			submittedAt: "2026-10-22T12:00:00.000Z",
 			chargedAmount: "2000.00",
+			refundDecision: null,
 		}];
 	};
 	try {
@@ -516,6 +522,70 @@ test("Admin RefundPending route returns captured amounts privately and rejects n
 		assert.equal(denied.status, 403);
 	} finally {
 		casesService.listRefundPendingCases = originalListRefundPendingCases;
+	}
+});
+
+test("Admin refund decision route validates actions, enforces Admin auth, and returns typed conflicts privately", async () => {
+	const originalDecision = casesService.decideRefund;
+	const decisions: { caller: string; caseId: string; decision: string }[] = [];
+	casesService.decideRefund = async (caller, caseId, decision) => {
+		decisions.push({ caller: caller.userId, caseId, decision });
+		if (decision === "reject") throw new CaseRefundDecisionConflictError();
+		if (caseId === "case-fail") throw new PaymentRefundFailedError();
+		return { caseId, decision: "Approved", status: "Closed", refundedAmount: "2000.00", refundConfirmedAt: "2026-10-22T12:00:00.000Z" };
+	};
+	try {
+		assert.equal(await parseRefundDecisionRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ decision: "approve" }),
+		})), "approve");
+		await assert.rejects(parseRefundDecisionRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ decision: "refund" }),
+		})), { code: "VALIDATION_ERROR" });
+		await assert.rejects(parseRefundDecisionRequest(new Request("http://localhost", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ decision: "approve", ignored: "x".repeat(1100) }),
+		})), { code: "UPLOAD_TOO_LARGE" });
+
+		const adminToken = signAuthToken({ userId: "admin-refund", role: "admin" });
+		const approved = await postAdminRefundDecisionRoute(new Request("http://localhost/api/admin/cases/refunds/case-1", {
+			method: "POST",
+			headers: { cookie: `admin_session=${adminToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ decision: "approve" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(approved.status, 200);
+		assert.equal(approved.headers.get("cache-control"), "private, no-store");
+		assert.deepEqual(decisions[0], { caller: "admin-refund", caseId: "case-1", decision: "approve" });
+
+		const conflict = await postAdminRefundDecisionRoute(new Request("http://localhost/api/admin/cases/refunds/case-1", {
+			method: "POST",
+			headers: { cookie: `admin_session=${adminToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ decision: "reject" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(conflict.status, 409);
+		assert.equal((await conflict.json() as { error: { code: string } }).error.code, "CASE_REFUND_DECISION_CONFLICT");
+
+		const failed = await postAdminRefundDecisionRoute(new Request("http://localhost/api/admin/cases/refunds/case-fail", {
+			method: "POST",
+			headers: { cookie: `admin_session=${adminToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ decision: "approve" }),
+		}), { params: Promise.resolve({ caseId: "case-fail" }) });
+		assert.equal(failed.status, 503);
+		assert.equal((await failed.json() as { error: { code: string } }).error.code, "PAYMENT_REFUND_FAILED");
+
+		const doctorToken = signAuthToken({ userId: "doctor-refund", role: "doctor" });
+		const denied = await postAdminRefundDecisionRoute(new Request("http://localhost/api/admin/cases/refunds/case-1", {
+			method: "POST",
+			headers: { cookie: `admin_session=${doctorToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ decision: "approve" }),
+		}), { params: Promise.resolve({ caseId: "case-1" }) });
+		assert.equal(denied.status, 403);
+	} finally {
+		casesService.decideRefund = originalDecision;
 	}
 });
 

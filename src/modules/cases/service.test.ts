@@ -14,7 +14,7 @@ const { casesService, createCasesService } = await import("./service");
 const { casesRepository } = await import("./repository");
 const { runCaseSlaBreachJob, startDailyCaseSlaBreachJob } = await import("./sla-breach-job");
 const { prisma } = await import("../../shared/prisma-client");
-const { PaymentDeclinedError } = await import("../payments/domain");
+const { PaymentDeclinedError, PaymentRefundFailedError, PaymentRefundUnavailableError } = await import("../payments/domain");
 const { CASE_RESPONSE_SLA_MS, computeElapsedSlaTime } = await import("./domain/sla");
 
 const PATIENT: AuthContext = { userId: "patient-a", role: "patient" };
@@ -41,6 +41,8 @@ function createFixture(options: {
 	failDelete?: boolean;
 	failSubmissionPersistence?: boolean;
 	failPayment?: boolean;
+	failRefund?: boolean;
+	failRefundFinalization?: boolean;
 	failSettings?: boolean;
 	includeAdditionalDoctors?: boolean;
 	standardCaseFee?: string;
@@ -57,10 +59,13 @@ function createFixture(options: {
 	let failDelete = options.failDelete ?? false;
 	let failSubmissionPersistence = options.failSubmissionPersistence ?? false;
 	let failPayment = options.failPayment ?? false;
+	let failRefund = options.failRefund ?? false;
+	let failRefundFinalization = options.failRefundFinalization ?? false;
 	let failSettings = options.failSettings ?? false;
 	let standardCaseFee = options.standardCaseFee ?? "1000.00";
 	let urgentCaseFee = options.urgentCaseFee ?? "2000.00";
 	let chargeCalls = 0;
+	let refundCalls = 0;
 	const attempts = new Map<string, PaymentAttempt>();
 	const deleteCalls: string[] = [];
 
@@ -69,7 +74,7 @@ function createFixture(options: {
 			if (requestCases.has(creationRequestId)) throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
 			const now = new Date();
 			const record: CaseRecord = {
-				id: randomUUID(), patientId, doctorId: null, specialtyId: null, ...input, selectedDoctorId: null, urgencyTier: null, chargedAmount: null, status: "Draft", submittedAt: null, slaPauseHistory: [], assignmentLockVersion: 0, documents: [], createdAt: now, updatedAt: now,
+				id: randomUUID(), patientId, doctorId: null, specialtyId: null, ...input, selectedDoctorId: null, urgencyTier: null, chargedAmount: null, status: "Draft", submittedAt: null, slaPauseHistory: [], assignmentLockVersion: 0, refundDecision: null, refundConfirmedAt: null, documents: [], createdAt: now, updatedAt: now,
 			};
 			cases.set(record.id, record);
 			requestCases.set(creationRequestId, record.id);
@@ -133,7 +138,42 @@ function createFixture(options: {
 		async markCaseRefundPending(caseId: string, expectedStatus: CaseRecord["status"]): Promise<boolean> {
 			const record = cases.get(caseId);
 			if (!record || record.status !== expectedStatus || !["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)) return false;
-			cases.set(caseId, { ...record, status: "RefundPending" });
+			cases.set(caseId, { ...record, status: "RefundPending", refundDecision: null, refundConfirmedAt: null });
+			return true;
+		},
+		async claimRefundApproval(caseId: string): Promise<boolean> {
+			const record = cases.get(caseId);
+			if (!record || record.status !== "RefundPending" || record.refundDecision !== null) return false;
+			cases.set(caseId, { ...record, refundDecision: "Approving" });
+			return true;
+		},
+		async releaseRefundApproval(caseId: string): Promise<boolean> {
+			const record = cases.get(caseId);
+			if (!record || record.status !== "RefundPending" || record.refundDecision !== "Approving") return false;
+			cases.set(caseId, { ...record, refundDecision: null });
+			return true;
+		},
+		async rejectRefundPendingCase(caseId: string, rejectedAt: Date): Promise<boolean> {
+			const record = cases.get(caseId);
+			if (!record || record.status !== "RefundPending" || record.refundDecision !== null) return false;
+			cases.set(caseId, {
+				...record,
+				status: "UnderReview",
+				submittedAt: rejectedAt,
+				slaPauseHistory: [],
+				refundDecision: "Rejected",
+				refundConfirmedAt: null,
+			});
+			return true;
+		},
+		async finalizeRefundApproval(caseId: string, confirmedAt: Date): Promise<boolean> {
+			if (failRefundFinalization) {
+				failRefundFinalization = false;
+				return false;
+			}
+			const record = cases.get(caseId);
+			if (!record || record.status !== "RefundPending" || record.refundDecision !== "Approving") return false;
+			cases.set(caseId, { ...record, status: "Closed", refundDecision: "Approved", refundConfirmedAt: confirmedAt });
 			return true;
 		},
 		async listRefundPendingCases() {
@@ -144,6 +184,7 @@ function createFixture(options: {
 				doctorId: record.doctorId,
 				submittedAt: record.submittedAt,
 				chargedAmount: record.chargedAmount,
+				refundDecision: record.refundDecision,
 			}));
 		},
 		async listPatientCases(patientId: string) {
@@ -395,6 +436,10 @@ function createFixture(options: {
 				transactionId: null,
 				status: "Pending",
 				providerError: null,
+				refundIdempotencyKey: null,
+				refundStatus: null,
+				refundTransactionId: null,
+				refundProviderError: null,
 				createdAt: existing?.createdAt ?? now,
 				updatedAt: now,
 			};
@@ -411,6 +456,21 @@ function createFixture(options: {
 			attempts.set(attempt.caseId, succeeded);
 			return succeeded;
 		},
+		async refundCapturedPayment(caseId: string) {
+			refundCalls += 1;
+			if (failRefund) throw new PaymentRefundFailedError();
+			const attempt = attempts.get(caseId);
+			if (!attempt || attempt.status !== "Succeeded" || !attempt.transactionId) throw new PaymentRefundUnavailableError();
+			const refunded: PaymentAttempt = {
+				...attempt,
+				refundIdempotencyKey: attempt.refundIdempotencyKey ?? randomUUID(),
+				refundStatus: "Succeeded",
+				refundTransactionId: "refund-transaction",
+				refundProviderError: null,
+			};
+			attempts.set(caseId, refunded);
+			return refunded;
+		},
 	};
 
 	return {
@@ -424,10 +484,12 @@ function createFixture(options: {
 		get readCalls() { return readCalls; },
 		get doctorLookupCalls() { return doctorLookupCalls; },
 		get chargeCalls() { return chargeCalls; },
+		get refundCalls() { return refundCalls; },
 		attempts,
 		setFailDelete(value: boolean) { failDelete = value; },
 		setFailSubmissionPersistence(value: boolean) { failSubmissionPersistence = value; },
 		setFailPayment(value: boolean) { failPayment = value; },
+		setFailRefund(value: boolean) { failRefund = value; },
 		setFailSettings(value: boolean) { failSettings = value; },
 		setFees(standard: string, urgent: string) { standardCaseFee = standard; urgentCaseFee = urgent; },
 		repository,
@@ -452,6 +514,18 @@ async function createAssignedCase(fixture: ReturnType<typeof createFixture>) {
 	const classified = fixture.cases.get(submitted.id)!;
 	await fixture.service.assignCaseToDoctor(VERIFIED_DOCTOR, submitted.id, undefined, classified.assignmentLockVersion);
 	return fixture.cases.get(submitted.id)!;
+}
+
+async function createRefundPendingCase(fixture: ReturnType<typeof createFixture>) {
+	const submitted = await createSubmittedCase(fixture);
+	const pending = {
+		...submitted,
+		status: "RefundPending" as const,
+		submittedAt: new Date(Date.now() - CASE_RESPONSE_SLA_MS - 1000),
+		slaPauseHistory: [{ pausedAt: new Date(Date.now() - 10_000).toISOString(), resumedAt: null }],
+	};
+	fixture.cases.set(submitted.id, pending);
+	return pending;
 }
 
 test("assigned Doctor submits one final Opinion, closes the Case, and exposes payout eligibility", async () => {
@@ -620,6 +694,97 @@ test("daily SLA scan does not overwrite a successful Patient response that wins 
 	assert.equal(result.transitionedCount, 0);
 	assert.equal(fixture.cases.get(record.id)?.status, "UnderReview");
 	assert.ok((fixture.cases.get(record.id)?.slaPauseHistory as { resumedAt: string | null }[])[0].resumedAt);
+});
+
+test("Admin approval refunds the captured payment before closing and exposes the Patient notice", async () => {
+	const fixture = createFixture();
+	const pending = await createRefundPendingCase(fixture);
+	await assert.rejects(fixture.service.decideRefund(DOCTOR, pending.id, "approve"), { code: "CASE_ADMIN_ACCESS_DENIED" });
+
+	const result = await fixture.service.decideRefund(ADMIN, pending.id, "approve");
+	assert.deepEqual(result, {
+		caseId: pending.id,
+		decision: "Approved",
+		status: "Closed",
+		refundedAmount: "1000.00",
+		refundConfirmedAt: fixture.cases.get(pending.id)?.refundConfirmedAt?.toISOString(),
+	});
+	assert.equal(fixture.cases.get(pending.id)?.status, "Closed");
+	assert.equal(fixture.cases.get(pending.id)?.refundDecision, "Approved");
+	assert.equal(fixture.attempts.get(pending.id)?.refundStatus, "Succeeded");
+	assert.equal(fixture.refundCalls, 1);
+	assert.equal((await fixture.service.listClosedOpinionsForPayout(null)).items.some(({ caseId }) => caseId === pending.id), false);
+	assert.equal((await fixture.service.listPatientCases(PATIENT))[0].refundConfirmedAt, result.refundConfirmedAt);
+	assert.deepEqual(await fixture.service.decideRefund(ADMIN, pending.id, "approve"), result);
+	assert.equal(fixture.refundCalls, 1);
+});
+
+test("definitive provider refund failure releases the approval claim for safe retry", async () => {
+	const fixture = createFixture({ failRefund: true });
+	const pending = await createRefundPendingCase(fixture);
+	await assert.rejects(fixture.service.decideRefund(ADMIN, pending.id, "approve"), { code: "PAYMENT_REFUND_FAILED" });
+	assert.equal(fixture.cases.get(pending.id)?.status, "RefundPending");
+	assert.equal(fixture.cases.get(pending.id)?.refundDecision, null);
+
+	fixture.setFailRefund(false);
+	assert.equal((await fixture.service.decideRefund(ADMIN, pending.id, "approve")).status, "Closed");
+	assert.equal(fixture.refundCalls, 2);
+});
+
+test("confirmed refund retries Case finalization without issuing another refund", async () => {
+	const fixture = createFixture({ failRefundFinalization: true });
+	const pending = await createRefundPendingCase(fixture);
+	await assert.rejects(fixture.service.decideRefund(ADMIN, pending.id, "approve"), { code: "CASE_REFUND_RECOVERY_REQUIRED" });
+	assert.equal(fixture.cases.get(pending.id)?.status, "RefundPending");
+	assert.equal(fixture.attempts.get(pending.id)?.refundStatus, "Succeeded");
+
+	const recovered = await fixture.service.decideRefund(ADMIN, pending.id, "approve");
+	assert.equal(recovered.status, "Closed");
+	assert.equal(fixture.cases.get(pending.id)?.refundDecision, "Approved");
+	assert.equal(fixture.refundCalls, 2);
+});
+
+test("Admin rejection resets the SLA anchor and pause history, then allows a later breach cycle", async () => {
+	const fixture = createFixture();
+	const pending = await createRefundPendingCase(fixture);
+	const result = await fixture.service.decideRefund(ADMIN, pending.id, "reject");
+	const rejected = fixture.cases.get(pending.id)!;
+	assert.equal(result.status, "UnderReview");
+	assert.equal(rejected.status, "UnderReview");
+	assert.equal(rejected.refundDecision, "Rejected");
+	assert.ok(rejected.submittedAt && rejected.submittedAt > pending.submittedAt!);
+	assert.deepEqual(rejected.slaPauseHistory, []);
+	assert.equal(fixture.refundCalls, 0);
+	assert.equal(computeElapsedSlaTime(rejected, rejected.submittedAt!), 0);
+
+	const now = new Date();
+	fixture.cases.set(pending.id, {
+		...rejected,
+		submittedAt: new Date(now.getTime() - CASE_RESPONSE_SLA_MS - 1),
+	});
+	assert.equal((await fixture.service.runSlaBreachScan(now)).transitionedCount, 1);
+	assert.equal(fixture.cases.get(pending.id)?.refundDecision, null);
+	assert.equal((await fixture.service.decideRefund(ADMIN, pending.id, "approve")).status, "Closed");
+});
+
+test("competing Admin approval and rejection decisions have one winner and losing rejection never triggers a refund", async () => {
+	const fixture = createFixture();
+	const pending = await createRefundPendingCase(fixture);
+	const decisions = await Promise.allSettled([
+		fixture.service.decideRefund(ADMIN, pending.id, "approve"),
+		fixture.service.decideRefund(ADMIN, pending.id, "reject"),
+	]);
+	assert.equal(decisions.filter(({ status }) => status === "fulfilled").length, 1);
+	assert.equal(decisions.filter(({ status }) => status === "rejected").length, 1);
+	const state = fixture.cases.get(pending.id)!;
+	if (state.status === "UnderReview") {
+		assert.equal(fixture.refundCalls, 0);
+		assert.equal(state.refundDecision, "Rejected");
+	} else {
+		assert.equal(state.status, "Closed");
+		assert.equal(state.refundDecision, "Approved");
+		assert.equal(fixture.refundCalls, 1);
+	}
 });
 
 test("daily SLA job passes one scan time and emits structured success or failure logs", async () => {
@@ -1892,7 +2057,7 @@ test("RefundPending repository transition compare-and-swaps the observed eligibl
 		assert.equal(await casesRepository.markCaseRefundPending("case-1", "Submitted"), true);
 		assert.deepEqual(query, {
 			where: { id: "case-1", status: "Submitted", submittedAt: { not: null }, chargedAmount: { not: null } },
-			data: { status: "RefundPending" },
+			data: { status: "RefundPending", refundDecision: null, refundConfirmedAt: null },
 		});
 		assert.equal(await casesRepository.markCaseRefundPending("case-1", "Closed"), false);
 	} finally {
@@ -1917,9 +2082,75 @@ test("Admin RefundPending repository selects only fields needed for the decision
 				doctorId: true,
 				submittedAt: true,
 				chargedAmount: true,
+				refundDecision: true,
 			},
 		});
 	} finally {
 		caseDelegate.findMany = originalFindMany;
+	}
+});
+
+test("refund decision repository claims and rejects only an unclaimed RefundPending Case", async () => {
+	const caseDelegate = prisma.case as unknown as { updateMany: (args: unknown) => Promise<{ count: number }> };
+	const originalUpdateMany = caseDelegate.updateMany;
+	const updates: unknown[] = [];
+	caseDelegate.updateMany = async (args) => { updates.push(args); return { count: 1 }; };
+	try {
+		assert.equal(await casesRepository.claimRefundApproval("case-refund"), true);
+		assert.deepEqual(updates[0], {
+			where: { id: "case-refund", status: "RefundPending", refundDecision: null },
+			data: { refundDecision: "Approving" },
+		});
+		assert.equal(await casesRepository.releaseRefundApproval("case-refund"), true);
+		assert.deepEqual(updates[1], {
+			where: { id: "case-refund", status: "RefundPending", refundDecision: "Approving" },
+			data: { refundDecision: null },
+		});
+
+		const rejectedAt = new Date("2026-10-22T12:00:00.000Z");
+		assert.equal(await casesRepository.rejectRefundPendingCase("case-refund", rejectedAt), true);
+		assert.deepEqual(updates[2], {
+			where: { id: "case-refund", status: "RefundPending", refundDecision: null },
+			data: {
+				status: "UnderReview",
+				submittedAt: rejectedAt,
+				slaPauseHistory: [],
+				refundDecision: "Rejected",
+				refundConfirmedAt: null,
+			},
+		});
+	} finally {
+		caseDelegate.updateMany = originalUpdateMany;
+	}
+});
+
+test("refund approval repository transitions through Refunded to Closed in one transaction", async () => {
+	type TransactionMock = { case: { updateMany: (args: unknown) => Promise<{ count: number }> } };
+	const prismaClient = prisma as unknown as { $transaction: (callback: (transaction: TransactionMock) => Promise<boolean>) => Promise<boolean> };
+	const originalTransaction = prismaClient.$transaction;
+	const confirmedAt = new Date("2026-10-22T12:00:00.000Z");
+	const updates: unknown[] = [];
+	prismaClient.$transaction = async (callback) => callback({
+		case: {
+			async updateMany(args) {
+				updates.push(args);
+				return { count: 1 };
+			},
+		},
+	});
+	try {
+		assert.equal(await casesRepository.finalizeRefundApproval("case-refund", confirmedAt), true);
+		assert.deepEqual(updates, [
+			{
+				where: { id: "case-refund", status: "RefundPending", refundDecision: "Approving" },
+				data: { status: "Refunded", refundConfirmedAt: confirmedAt },
+			},
+			{
+				where: { id: "case-refund", status: "Refunded", refundDecision: "Approving" },
+				data: { status: "Closed", refundDecision: "Approved" },
+			},
+		]);
+	} finally {
+		prismaClient.$transaction = originalTransaction;
 	}
 });

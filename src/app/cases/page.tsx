@@ -37,6 +37,8 @@ interface PatientCase {
 	urgencyTier: "Standard" | "Urgent" | null;
 	submittedAt: string | null;
 	updatedAt: string;
+	refundConfirmedAt: string | null;
+	refundedAmount: string | null;
 	documents: CaseDocument[];
 	documentRequests: CaseDocumentRequest[];
 	opinion: CaseOpinion | null;
@@ -177,6 +179,11 @@ export default function PatientCasesPage() {
 								</header>
 								<p className="patient-case-condition">{caseRecord.condition}</p>
 								<p className="patient-case-submitted">Submitted {displayDate(caseRecord.submittedAt)}</p>
+								{caseRecord.refundConfirmedAt && (
+									<p className="case-message case-message-success" role="status">
+										Refund confirmed{caseRecord.refundedAmount ? `: ₹${caseRecord.refundedAmount}` : ""} to your original payment on {displayDate(caseRecord.refundConfirmedAt)}.
+									</p>
+								)}
 
 								{caseRecord.documentRequests.length > 0 && (
 									<section className="patient-case-requests" aria-label="Document request history">

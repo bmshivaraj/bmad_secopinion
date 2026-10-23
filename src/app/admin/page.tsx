@@ -64,6 +64,7 @@ interface RefundPendingCase {
   doctorId: string | null;
   submittedAt: string | null;
   chargedAmount: string | null;
+  refundDecision: "Approving" | "Rejected" | "Approved" | null;
 }
 
 interface ApiResult<T> {
@@ -94,6 +95,7 @@ export default function AdminPage() {
   const [busyDoctorId, setBusyDoctorId] = useState<string | null>(null);
   const [busyCaseId, setBusyCaseId] = useState<string | null>(null);
   const [busyAssignmentCaseId, setBusyAssignmentCaseId] = useState<string | null>(null);
+  const [busyRefundCaseId, setBusyRefundCaseId] = useState<string | null>(null);
   const [caseSpecialtySelections, setCaseSpecialtySelections] = useState<Record<string, string>>({});
   const [caseAssignmentSelections, setCaseAssignmentSelections] = useState<Record<string, string>>({});
   const [refreshKey, setRefreshKey] = useState(0);
@@ -106,6 +108,8 @@ export default function AdminPage() {
   const [assignmentError, setAssignmentError] = useState("");
   const [assignmentNotice, setAssignmentNotice] = useState("");
   const [refundPendingError, setRefundPendingError] = useState("");
+  const [refundDecisionError, setRefundDecisionError] = useState("");
+  const [refundDecisionNotice, setRefundDecisionNotice] = useState("");
 
   useEffect(() => {
     let isCurrent = true;
@@ -385,6 +389,40 @@ export default function AdminPage() {
     }
   }
 
+  async function handleRefundDecision(caseRecord: RefundPendingCase, decision: "approve" | "reject") {
+    const action = decision === "approve" ? "approve the full captured refund for" : "return to review";
+    if (!window.confirm(`Are you sure you want to ${action} Case ${caseRecord.id}?`)) return;
+    setBusyRefundCaseId(caseRecord.id);
+    setRefundDecisionError("");
+    setRefundDecisionNotice("");
+    try {
+      const response = await fetch(`/api/admin/cases/refunds/${encodeURIComponent(caseRecord.id)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      const result = await response.json() as ApiResult<{ decision: string; status: string; refundedAmount?: string | null }>;
+      if (response.status === 401 || response.status === 403) {
+        setIsAuthenticated(false);
+        return;
+      }
+      if (!response.ok || result.error || !result.data) {
+        setRefundDecisionError(result.error?.message ?? "Unable to save the refund decision.");
+        if (response.status === 409) setRefreshKey((value) => value + 1);
+        return;
+      }
+      setRefundDecisionNotice(decision === "approve"
+        ? `Refund confirmed for Case ${caseRecord.id}${result.data.refundedAmount ? `: ₹${result.data.refundedAmount}.` : "."}`
+        : `Case ${caseRecord.id} returned to Doctor review with a fresh response window.`);
+      setRefreshKey((value) => value + 1);
+    } catch {
+      setRefundDecisionError("Unable to confirm the decision. Refresh the refund list before retrying.");
+      setRefreshKey((value) => value + 1);
+    } finally {
+      setBusyRefundCaseId(null);
+    }
+  }
+
   async function handleAddSpecialty(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isSpecialtiesLoading || isAddingSpecialty) return;
@@ -626,6 +664,8 @@ export default function AdminPage() {
             </div>
           </div>
           {refundPendingError && <p className="admin-error" role="alert">{refundPendingError}</p>}
+          {refundDecisionNotice && <p className="admin-notice" role="status">{refundDecisionNotice}</p>}
+          {refundDecisionError && <p className="admin-error" role="alert">{refundDecisionError}</p>}
           {isRefundPendingLoading ? (
             <p className="admin-muted" role="status">Loading RefundPending Cases...</p>
           ) : refundPendingError && refundPendingCases.length === 0 ? (
@@ -644,7 +684,25 @@ export default function AdminPage() {
                     <p><strong>Doctor:</strong> {caseRecord.doctorId ?? "Unassigned"}</p>
                     <span>Submitted {caseRecord.submittedAt ? new Date(caseRecord.submittedAt).toLocaleString() : "time unavailable"}</span>
                   </div>
-                  <strong className="admin-status">Awaiting decision</strong>
+                  <div className="admin-decision-actions">
+                    <strong className="admin-status">{caseRecord.refundDecision === "Approving" ? "Approval in progress" : "Awaiting decision"}</strong>
+                    <button
+                      className="admin-decision admin-decision-approve"
+                      type="button"
+                      disabled={busyRefundCaseId !== null}
+                      onClick={() => void handleRefundDecision(caseRecord, "approve")}
+                    >
+                      {busyRefundCaseId === caseRecord.id ? "Processing..." : caseRecord.refundDecision === "Approving" ? "Retry approval" : "Approve refund"}
+                    </button>
+                    <button
+                      className="admin-decision admin-decision-reject"
+                      type="button"
+                      disabled={busyRefundCaseId !== null || caseRecord.refundDecision !== null}
+                      onClick={() => void handleRefundDecision(caseRecord, "reject")}
+                    >
+                      Reject and resume
+                    </button>
+                  </div>
                 </article>
               ))}
             </div>

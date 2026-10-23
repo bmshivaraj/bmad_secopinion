@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import { adminService } from "../admin/service";
 import { doctorsService } from "../doctors/service";
 import { paymentsService } from "../payments/service";
-import { PaymentRecoveryRequiredError } from "../payments/domain";
+import {
+	PaymentRecoveryRequiredError,
+	PaymentRefundFailedError,
+	PaymentRefundRecoveryRequiredError,
+	PaymentRefundUnavailableError,
+} from "../payments/domain";
 import type { PaymentAttemptInput } from "../payments/domain";
 import { storageProvider } from "../../shared/storage-provider";
 import type { StorageProvider } from "../../shared/storage-provider";
@@ -22,6 +27,8 @@ import {
 	CaseDocumentNotFoundError,
 	CaseDocumentRequestConflictError,
 	CaseOpinionConflictError,
+	CaseRefundDecisionConflictError,
+	CaseRefundRecoveryRequiredError,
 	CaseDocumentRequiredError,
 	CaseNotFoundError,
 	CaseSessionUnauthorizedError,
@@ -53,6 +60,7 @@ type CasesRepository = Pick<
 	| "listPatientCases" | "createDocumentRequest" | "createDocuments" | "createResponseDocuments" | "findDocumentById" | "deleteDocument"
 	| "submitOpinion" | "listClosedOpinionsForPayout" | "findOpinionByCaseId"
 	| "listSlaCandidates" | "markCaseRefundPending" | "listRefundPendingCases"
+	| "claimRefundApproval" | "releaseRefundApproval" | "rejectRefundPendingCase" | "finalizeRefundApproval"
 >;
 
 type DoctorsService = Pick<
@@ -60,7 +68,9 @@ type DoctorsService = Pick<
 	"listVerifiedDoctors" | "getVerifiedDoctor" | "getVerifiedDoctorSpecialtyIds" | "listActiveSpecialties"
 >;
 type AdminSettingsService = Pick<typeof adminService, "getPlatformSettings">;
-type PaymentsService = Pick<typeof paymentsService, "findAttemptByCaseId" | "prepareAttempt" | "chargeAttempt">;
+type PaymentsService = Pick<typeof paymentsService,
+	"findAttemptByCaseId" | "prepareAttempt" | "chargeAttempt" | "refundCapturedPayment"
+>;
 
 async function assertDraftMutationAllowed(payments: PaymentsService, caseId: string) {
 	const attempt = await payments.findAttemptByCaseId(caseId);
@@ -747,7 +757,90 @@ export function createCasesService(
 				doctorId: record.doctorId,
 				submittedAt: record.submittedAt?.toISOString() ?? null,
 				chargedAmount: record.chargedAmount?.toFixed(2) ?? null,
+				refundDecision: record.refundDecision,
 			}));
+		},
+
+		async decideRefund(caller: AuthContext, caseId: string, decision: "approve" | "reject") {
+			assertAdmin(caller);
+			if (decision !== "approve" && decision !== "reject") throw new InvalidCaseInputError("decision must be approve or reject.");
+			let record = await repository.findById(caseId);
+			if (!record) throw new CaseNotFoundError();
+
+			if (decision === "reject") {
+				if (record.status !== "RefundPending" || record.refundDecision !== null) {
+					throw new CaseRefundDecisionConflictError();
+				}
+				const rejectedAt = new Date();
+				if (!await repository.rejectRefundPendingCase(caseId, rejectedAt)) {
+					throw new CaseRefundDecisionConflictError();
+				}
+				return { caseId, decision: "Rejected" as const, status: "UnderReview" as const, submittedAt: rejectedAt.toISOString() };
+			}
+
+			if (record.status === "Closed" && record.refundDecision === "Approved" && record.refundConfirmedAt) {
+				return {
+					caseId,
+					decision: "Approved" as const,
+					status: "Closed" as const,
+					refundedAmount: record.chargedAmount?.toFixed(2) ?? null,
+					refundConfirmedAt: record.refundConfirmedAt.toISOString(),
+				};
+			}
+			if (record.status !== "RefundPending" || (record.refundDecision !== null && record.refundDecision !== "Approving")) {
+				throw new CaseRefundDecisionConflictError();
+			}
+			if (record.refundDecision !== "Approving" && !await repository.claimRefundApproval(caseId)) {
+				record = await repository.findById(caseId);
+				if (!record) throw new CaseNotFoundError();
+				if (record.status === "Closed" && record.refundDecision === "Approved" && record.refundConfirmedAt) {
+					return {
+						caseId,
+						decision: "Approved" as const,
+						status: "Closed" as const,
+						refundedAmount: record.chargedAmount?.toFixed(2) ?? null,
+						refundConfirmedAt: record.refundConfirmedAt.toISOString(),
+					};
+				}
+				if (record.status !== "RefundPending" || record.refundDecision !== "Approving") {
+					throw new CaseRefundDecisionConflictError();
+				}
+			}
+
+			let payment;
+			try {
+				payment = await payments.refundCapturedPayment(caseId);
+			} catch (error) {
+				if (error instanceof PaymentRefundFailedError || error instanceof PaymentRefundUnavailableError) {
+					await repository.releaseRefundApproval(caseId);
+				}
+				throw error;
+			}
+			if (payment.refundStatus !== "Succeeded") throw new PaymentRefundRecoveryRequiredError();
+			const confirmedAt = new Date();
+			try {
+				if (!await repository.finalizeRefundApproval(caseId, confirmedAt)) {
+					const current = await repository.findById(caseId);
+					if (current?.status !== "Closed" || current.refundDecision !== "Approved" || !current.refundConfirmedAt) {
+						throw new CaseRefundRecoveryRequiredError();
+					}
+				}
+			} catch (error) {
+				if (error instanceof CaseRefundRecoveryRequiredError) throw error;
+				const current = await repository.findById(caseId);
+				if (current?.status !== "Closed" || current.refundDecision !== "Approved" || !current.refundConfirmedAt) {
+					throw new CaseRefundRecoveryRequiredError();
+				}
+			}
+			const completed = await repository.findById(caseId);
+			if (!completed?.refundConfirmedAt) throw new CaseRefundRecoveryRequiredError();
+			return {
+				caseId,
+				decision: "Approved" as const,
+				status: "Closed" as const,
+				refundedAmount: payment.chargedAmount.toFixed(2),
+				refundConfirmedAt: completed.refundConfirmedAt.toISOString(),
+			};
 		},
 
 		async listClosedOpinionsForPayout(after: OpinionPayoutCursor | null) {
@@ -804,6 +897,8 @@ export function createCasesService(
 				urgencyTier: record.urgencyTier,
 				submittedAt: record.submittedAt?.toISOString() ?? null,
 				updatedAt: record.updatedAt.toISOString(),
+				refundConfirmedAt: record.refundConfirmedAt?.toISOString() ?? null,
+				refundedAmount: record.refundConfirmedAt ? record.chargedAmount?.toFixed(2) ?? null : null,
 				documents: record.documents.map(publicDocument),
 				documentRequests: (record.documentRequests ?? []).map(publicDocumentRequest),
 				opinion: record.opinion ? publicOpinion(record.opinion) : null,

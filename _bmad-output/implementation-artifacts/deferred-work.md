@@ -145,3 +145,15 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-5-1-daily-sla-breach-detection-refund-pending.md`
   summary: Add Admin RefundPending page rendering and refresh-state tests when UI test infrastructure is available.
   evidence: Existing route tests verify private API fields but do not render the worklist; the repository has no page/browser test harness.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-admin-refund-approval-rejection.md`
+  summary: Apply the refund migration and verify competing Admin refund decisions against PostgreSQL.
+  evidence: Schema validation and mocked conditional-write tests pass, but `npx prisma migrate status` fails with `P1000`; a working PostgreSQL environment is required to verify migration application and database concurrency.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-admin-refund-approval-rejection.md`
+  summary: Add Admin and Patient page-level refund decision and notice tests when UI test infrastructure is available.
+  evidence: Current tests exercise services and routes without rendering or interacting with the Admin worklist or Patient Cases page; the repository has no page/browser test harness.
+
+- source_spec: `_bmad-output/implementation-artifacts/spec-5-2-admin-refund-approval-rejection.md`
+  summary: Decide whether Admin refund approvals and rejections require durable actor attribution and decision-history retention.
+  evidence: The Case stores its current decision but not the Admin actor or a separate rejection timestamp, while repeated rejection cycles overwrite the SLA anchor; compliance and product requirements must establish the audit retention contract.

@@ -132,7 +132,7 @@ export const casesRepository = {
 		if (!canTransitionCase(expectedStatus, "RefundPending")) return false;
 		const updated = await prisma.case.updateMany({
 			where: { id: caseId, status: expectedStatus, submittedAt: { not: null }, chargedAmount: { not: null } },
-			data: { status: "RefundPending" },
+			data: { status: "RefundPending", refundDecision: null, refundConfirmedAt: null },
 		});
 		return updated.count === 1;
 	},
@@ -148,7 +148,56 @@ export const casesRepository = {
 				doctorId: true,
 				submittedAt: true,
 				chargedAmount: true,
+				refundDecision: true,
 			},
+		});
+	},
+
+	async claimRefundApproval(caseId: string): Promise<boolean> {
+		const updated = await prisma.case.updateMany({
+			where: { id: caseId, status: "RefundPending", refundDecision: null },
+			data: { refundDecision: "Approving" },
+		});
+		return updated.count === 1;
+	},
+
+	async releaseRefundApproval(caseId: string): Promise<boolean> {
+		const updated = await prisma.case.updateMany({
+			where: { id: caseId, status: "RefundPending", refundDecision: "Approving" },
+			data: { refundDecision: null },
+		});
+		return updated.count === 1;
+	},
+
+	async rejectRefundPendingCase(caseId: string, rejectedAt: Date): Promise<boolean> {
+		if (!canTransitionCase("RefundPending", "UnderReview")) return false;
+		const updated = await prisma.case.updateMany({
+			where: { id: caseId, status: "RefundPending", refundDecision: null },
+			data: {
+				status: "UnderReview",
+				submittedAt: rejectedAt,
+				slaPauseHistory: [],
+				refundDecision: "Rejected",
+				refundConfirmedAt: null,
+			},
+		});
+		return updated.count === 1;
+	},
+
+	async finalizeRefundApproval(caseId: string, confirmedAt: Date): Promise<boolean> {
+		if (!canTransitionCase("RefundPending", "Refunded") || !canTransitionCase("Refunded", "Closed")) return false;
+		return prisma.$transaction(async (transaction) => {
+			const refunded = await transaction.case.updateMany({
+				where: { id: caseId, status: "RefundPending", refundDecision: "Approving" },
+				data: { status: "Refunded", refundConfirmedAt: confirmedAt },
+			});
+			if (refunded.count !== 1) return false;
+			const closed = await transaction.case.updateMany({
+				where: { id: caseId, status: "Refunded", refundDecision: "Approving" },
+				data: { status: "Closed", refundDecision: "Approved" },
+			});
+			if (closed.count !== 1) throw new Error("Refunded Case could not be closed.");
+			return true;
 		});
 	},
 

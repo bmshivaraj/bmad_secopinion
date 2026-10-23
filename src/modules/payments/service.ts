@@ -2,12 +2,20 @@ import { randomUUID } from "node:crypto";
 import { paymentProvider } from "../../shared/payment-provider";
 import type { PaymentProvider } from "../../shared/payment-provider";
 import { paymentsRepository } from "./repository";
-import { PaymentAttemptConflictError, PaymentDeclinedError, PaymentRecoveryRequiredError } from "./domain";
+import {
+	PaymentAttemptConflictError,
+	PaymentDeclinedError,
+	PaymentRecoveryRequiredError,
+	PaymentRefundFailedError,
+	PaymentRefundRecoveryRequiredError,
+	PaymentRefundUnavailableError,
+} from "./domain";
 import type { PaymentAttempt, PaymentAttemptInput } from "./domain";
 
 type PaymentsRepository = Pick<
 	typeof paymentsRepository,
 	"findAttemptByCaseId" | "createAttempt" | "renewFailedAttempt" | "markFailed" | "markSucceeded"
+	| "prepareRefund" | "retryFailedRefund" | "markRefundFailed" | "markRefundSucceeded"
 >;
 
 function isUniqueConstraintViolation(error: unknown): boolean {
@@ -68,6 +76,51 @@ export function createPaymentsService(
 				return saved;
 			} catch {
 				throw new PaymentRecoveryRequiredError();
+			}
+		},
+
+		async refundCapturedPayment(caseId: string) {
+			let attempt = await repository.findAttemptByCaseId(caseId);
+			if (!attempt || attempt.status !== "Succeeded" || !attempt.transactionId) {
+				throw new PaymentRefundUnavailableError();
+			}
+			if (attempt.refundStatus === "Succeeded") return attempt;
+			if (attempt.refundStatus === "Failed") {
+				attempt = await repository.retryFailedRefund(caseId, randomUUID());
+			}
+			if (!attempt) throw new PaymentRefundRecoveryRequiredError();
+
+			if (!attempt.refundIdempotencyKey) {
+				attempt = await repository.prepareRefund(caseId, randomUUID());
+			}
+			if (!attempt?.refundIdempotencyKey || attempt.status !== "Succeeded" || !attempt.transactionId) {
+				throw new PaymentRefundRecoveryRequiredError();
+			}
+			if (attempt.refundStatus === "Succeeded") return attempt;
+
+			let result: Awaited<ReturnType<PaymentProvider["refund"]>>;
+			try {
+				result = await provider.refund(attempt.transactionId, attempt.chargedAmount, attempt.refundIdempotencyKey);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "Refund provider outcome is unknown.";
+				const saved = await repository.markRefundFailed(caseId, attempt.refundIdempotencyKey, "Uncertain", message).catch(() => null);
+				if (saved?.refundStatus === "Succeeded") return saved;
+				throw new PaymentRefundRecoveryRequiredError();
+			}
+
+			if (!result.success) {
+				const message = result.error?.slice(0, 500) ?? "Provider did not confirm the refund.";
+				const saved = await repository.markRefundFailed(caseId, attempt.refundIdempotencyKey, "Failed", message).catch(() => null);
+				if (saved?.refundStatus === "Succeeded") return saved;
+				throw new PaymentRefundFailedError();
+			}
+
+			try {
+				const saved = await repository.markRefundSucceeded(caseId, attempt.refundIdempotencyKey, result.refundId ?? null);
+				if (!saved || saved.refundStatus !== "Succeeded") throw new Error("Refund result was not persisted.");
+				return saved;
+			} catch {
+				throw new PaymentRefundRecoveryRequiredError();
 			}
 		},
 	};

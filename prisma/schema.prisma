@@ -52,6 +52,23 @@ enum PaymentAttemptStatus {
   @@map("payment_attempt_status")
 }
 
+enum PaymentRefundStatus {
+  Pending
+  Failed
+  Uncertain
+  Succeeded
+
+  @@map("payment_refund_status")
+}
+
+enum CaseRefundDecision {
+  Approving
+  Rejected
+  Approved
+
+  @@map("case_refund_decision")
+}
+
 // Admin-extensible reference table (AD-15). Doctor.specialties (added in a later story)
 // will be a many-to-many join against this table.
 model Specialty {
@@ -163,6 +180,8 @@ model Case {
   submittedAt           DateTime?    @map("submitted_at")
   slaPauseHistory       Json         @default("[]") @map("sla_pause_history")
   assignmentLockVersion Int          @default(0) @map("assignment_lock_version")
+  refundDecision        CaseRefundDecision? @map("refund_decision")
+  refundConfirmedAt     DateTime?           @map("refund_confirmed_at")
   documents             CaseDocument[]
   documentRequests      CaseDocumentRequest[]
   opinion               CaseOpinion?
@@ -227,6 +246,10 @@ model PaymentAttempt {
   transactionId   String?              @map("transaction_id")
   status           PaymentAttemptStatus @default(Pending)
   providerError    String?              @map("provider_error")
+  refundIdempotencyKey  String?              @unique @map("refund_idempotency_key")
+  refundStatus          PaymentRefundStatus? @map("refund_status")
+  refundTransactionId   String?              @map("refund_transaction_id")
+  refundProviderError   String?              @map("refund_provider_error")
   createdAt        DateTime             @default(now()) @map("created_at")
   updatedAt        DateTime             @updatedAt @map("updated_at")
 

@@ -5,6 +5,8 @@ import type { CaseStatus } from "./case-state-machine";
 export { CASE_STATUSES, CASE_STATUS_TRANSITIONS, canTransitionCase } from "./case-state-machine";
 export type { CaseStatus } from "./case-state-machine";
 
+export type CaseRefundDecision = "Approving" | "Rejected" | "Approved";
+
 export interface CaseDocumentRecord {
 	id: string;
 	caseId: string;
@@ -54,6 +56,8 @@ export interface CaseRecord {
 	submittedAt: Date | null;
 	slaPauseHistory: Prisma.JsonValue;
 	assignmentLockVersion: number;
+	refundDecision: CaseRefundDecision | null;
+	refundConfirmedAt: Date | null;
 	createdAt: Date;
 	updatedAt: Date;
 	documents: CaseDocumentRecord[];
@@ -100,6 +104,22 @@ export class CaseAdminAccessDeniedError extends DomainError {
 
 	constructor() {
 		super("An Admin session is required to classify Cases.");
+	}
+}
+
+export class CaseRefundDecisionConflictError extends DomainError {
+	readonly code = "CASE_REFUND_DECISION_CONFLICT";
+
+	constructor() {
+		super("This Case is no longer available for that refund decision. Refresh the refund worklist.");
+	}
+}
+
+export class CaseRefundRecoveryRequiredError extends DomainError {
+	readonly code = "CASE_REFUND_RECOVERY_REQUIRED";
+
+	constructor() {
+		super("The refund was confirmed but the Case could not be closed. Retry the same Admin approval to recover it.");
 	}
 }
 

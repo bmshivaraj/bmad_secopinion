@@ -21,6 +21,7 @@ import {
 
 const MAX_MULTIPART_SIZE = 50 * 1024 * 1024;
 const MAX_OPINION_REQUEST_SIZE = 64 * 1024;
+const MAX_REFUND_DECISION_REQUEST_SIZE = 1024;
 
 function createBoundedMultipartBody(request: Request): ReadableStream<Uint8Array> {
 	const reader = request.body?.getReader();
@@ -177,6 +178,44 @@ export async function parseCaseDocumentRequest(request: Request): Promise<string
 	return note;
 }
 
+export async function parseRefundDecisionRequest(request: Request): Promise<"approve" | "reject"> {
+	let body: unknown;
+	const contentLength = Number(request.headers.get("content-length"));
+	if (Number.isFinite(contentLength) && contentLength > MAX_REFUND_DECISION_REQUEST_SIZE) {
+		throw new CaseUploadTooLargeError("Refund decision request body must not exceed 1 KiB.");
+	}
+	const reader = request.body?.getReader();
+	if (!reader) throw new InvalidCaseInputError("Request body must be valid JSON.");
+	const decoder = new TextDecoder("utf-8", { fatal: true });
+	let bodyText = "";
+	let bytesRead = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			bytesRead += value.byteLength;
+			if (bytesRead > MAX_REFUND_DECISION_REQUEST_SIZE) {
+				await reader.cancel().catch(() => undefined);
+				throw new CaseUploadTooLargeError("Refund decision request body must not exceed 1 KiB.");
+			}
+			bodyText += decoder.decode(value, { stream: true });
+		}
+		bodyText += decoder.decode();
+		body = JSON.parse(bodyText);
+	} catch (error) {
+		if (error instanceof CaseUploadTooLargeError) throw error;
+		throw new InvalidCaseInputError("Request body must be valid JSON.");
+	}
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		throw new InvalidCaseInputError("Request body must be a JSON object.");
+	}
+	const decision = (body as Record<string, unknown>).decision;
+	if (decision !== "approve" && decision !== "reject") {
+		throw new InvalidCaseInputError("decision must be approve or reject.");
+	}
+	return decision;
+}
+
 export async function parseCaseOpinionRequest(request: Request): Promise<string> {
 	const contentLength = Number(request.headers.get("content-length"));
 	if (Number.isFinite(contentLength) && contentLength > MAX_OPINION_REQUEST_SIZE) {
@@ -319,6 +358,8 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	SESSION_UNAUTHORIZED: 401,
 	CASE_ACCESS_DENIED: 403,
 	CASE_ADMIN_ACCESS_DENIED: 403,
+	CASE_REFUND_DECISION_CONFLICT: 409,
+	CASE_REFUND_RECOVERY_REQUIRED: 503,
 	CASE_DOCTOR_ACCESS_DENIED: 403,
 	CASE_NOT_FOUND: 404,
 	CASE_CLASSIFICATION_CONFLICT: 409,
@@ -336,6 +377,9 @@ const STATUS_BY_ERROR_CODE: Record<string, number> = {
 	PAYMENT_ATTEMPT_CONFLICT: 409,
 	PAYMENT_DECLINED: 402,
 	PAYMENT_RECOVERY_REQUIRED: 503,
+	PAYMENT_REFUND_UNAVAILABLE: 409,
+	PAYMENT_REFUND_FAILED: 503,
+	PAYMENT_REFUND_RECOVERY_REQUIRED: 503,
 	PLATFORM_SETTINGS_UNAVAILABLE: 503,
 	UPLOAD_TOO_LARGE: 413,
 };

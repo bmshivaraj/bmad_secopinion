@@ -13,8 +13,11 @@ export async function POST(request: Request, context: CaseAssignmentRouteContext
 	try {
 		const caller = requireAdminCaseContext(request);
 		const { caseId } = await context.params;
-		const { doctorId, expectedVersion } = await parseCaseAssignmentRequest(request);
-		return NextResponse.json(ok(await casesService.assignCaseToDoctor(caller, caseId, doctorId, expectedVersion)), {
+		const { doctorId, specialtyId, expectedVersion } = await parseCaseAssignmentRequest(request);
+		const result = specialtyId !== undefined
+			? await casesService.correctSubmittedCaseRouting(caller, caseId, specialtyId, doctorId!, expectedVersion)
+			: await casesService.assignCaseToDoctor(caller, caseId, doctorId, expectedVersion);
+		return NextResponse.json(ok(result), {
 			headers: { "cache-control": "private, no-store" },
 		});
 	} catch (error) {

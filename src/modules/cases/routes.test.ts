@@ -79,6 +79,16 @@ test("draft parser accepts the approved fields and rejects malformed JSON shapes
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify({ doctorId: " doctor-1 ", expectedVersion: 4 }),
 	})), { doctorId: "doctor-1", expectedVersion: 4 });
+	assert.deepEqual(await parseCaseAssignmentRequest(new Request("http://localhost", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ doctorId: " doctor-1 ", specialtyId: " specialty-neuro ", expectedVersion: 4 }),
+	})), { doctorId: "doctor-1", specialtyId: "specialty-neuro", expectedVersion: 4 });
+	await assert.rejects(parseCaseAssignmentRequest(new Request("http://localhost", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ specialtyId: "specialty-neuro", expectedVersion: 4 }),
+	})), { code: "VALIDATION_ERROR" });
 	await assert.rejects(parseCaseAssignmentRequest(new Request("http://localhost", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -90,8 +100,10 @@ test("Admin assignment and Doctor claim routes enforce roles and return private 
 	const originals = {
 		listAdminAssignmentCases: casesService.listAdminAssignmentCases,
 		assignCaseToDoctor: casesService.assignCaseToDoctor,
+		correctSubmittedCaseRouting: casesService.correctSubmittedCaseRouting,
 	};
 	const assignments: { role: string; caseId: string; doctorId: string | undefined; expectedVersion: number }[] = [];
+	const corrections: { role: string; caseId: string; specialtyId: string; doctorId: string; expectedVersion: number }[] = [];
 	casesService.listAdminAssignmentCases = async () => [{
 		id: "case-assignable",
 		affectedBodyArea: "Knee",
@@ -104,6 +116,7 @@ test("Admin assignment and Doctor claim routes enforce roles and return private 
 		doctorId: null,
 		assignedDoctorName: null,
 		availableDoctors: [{ id: "doctor-1", fullName: "Dr. One" }],
+		verifiedDoctors: [{ id: "doctor-1", fullName: "Dr. One", specialties: ["Cardiology"], specialtyIds: ["specialty-cardio"] }],
 		submittedAt: "2026-10-22T12:00:00.000Z",
 		assignmentLockVersion: 3,
 	}];
@@ -111,6 +124,10 @@ test("Admin assignment and Doctor claim routes enforce roles and return private 
 		assignments.push({ role: caller.role, caseId, doctorId, expectedVersion });
 		if (expectedVersion !== 3) throw new CaseAssignmentVersionConflictError();
 		return { id: caseId, doctorId: doctorId ?? caller.userId, selectedDoctorId: null, status: "UnderReview", assignmentLockVersion: expectedVersion + 1, submittedAt: "2026-10-22T12:00:00.000Z" };
+	};
+	casesService.correctSubmittedCaseRouting = async (caller, caseId, specialtyId, doctorId, expectedVersion) => {
+		corrections.push({ role: caller.role, caseId, specialtyId, doctorId, expectedVersion });
+		return { id: caseId, specialtyId, doctorId, selectedDoctorId: null, status: "UnderReview", assignmentLockVersion: expectedVersion + 1, submittedAt: "2026-10-22T12:00:00.000Z" };
 	};
 	try {
 		const adminToken = signAuthToken({ userId: "admin-1", role: "admin" });
@@ -130,6 +147,27 @@ test("Admin assignment and Doctor claim routes enforce roles and return private 
 		assert.equal(adminAssignment.status, 200);
 		assert.equal(adminAssignment.headers.get("cache-control"), "private, no-store");
 		assert.deepEqual(assignments[0], { role: "admin", caseId: "case-assignable", doctorId: "doctor-1", expectedVersion: 3 });
+
+		const routingCorrection = await postAdminCaseAssignmentRoute(new Request("http://localhost/api/admin/cases/case-assignable/assignment", {
+			method: "POST",
+			headers: { cookie: `admin_session=${adminToken}`, "content-type": "application/json" },
+			body: JSON.stringify({ doctorId: "doctor-2", specialtyId: "specialty-neuro", expectedVersion: 3 }),
+		}), { params: Promise.resolve({ caseId: "case-assignable" }) });
+		assert.equal(routingCorrection.status, 200);
+		assert.equal(routingCorrection.headers.get("cache-control"), "private, no-store");
+		assert.deepEqual(await routingCorrection.json(), {
+			data: {
+				id: "case-assignable",
+				specialtyId: "specialty-neuro",
+				doctorId: "doctor-2",
+				selectedDoctorId: null,
+				status: "UnderReview",
+				assignmentLockVersion: 4,
+				submittedAt: "2026-10-22T12:00:00.000Z",
+			},
+			error: null,
+		});
+		assert.deepEqual(corrections[0], { role: "admin", caseId: "case-assignable", specialtyId: "specialty-neuro", doctorId: "doctor-2", expectedVersion: 3 });
 
 		const claim = await postDoctorClaimRoute(new Request("http://localhost/api/doctors/queue/case-assignable/claim", {
 			method: "POST",

@@ -2,7 +2,6 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { AccountProfileLink } from "../components/account-profile-link";
-
 interface Credential {
   id: string;
   fileName: string;
@@ -48,6 +47,8 @@ interface UnclassifiedCase {
 interface AssignmentDoctor {
   id: string;
   fullName: string;
+  specialties: string[];
+  specialtyIds: string[];
 }
 
 interface AssignmentCase {
@@ -60,6 +61,7 @@ interface AssignmentCase {
   doctorId: string | null;
   assignedDoctorName: string | null;
   availableDoctors: AssignmentDoctor[];
+  verifiedDoctors?: AssignmentDoctor[];
   submittedAt: string | null;
   assignmentLockVersion: number;
 }
@@ -113,6 +115,7 @@ export default function AdminPage() {
   const [busyRefundCaseId, setBusyRefundCaseId] = useState<string | null>(null);
   const [caseSpecialtySelections, setCaseSpecialtySelections] = useState<Record<string, string>>({});
   const [caseAssignmentSelections, setCaseAssignmentSelections] = useState<Record<string, string>>({});
+  const [caseAssignmentSpecialtySelections, setCaseAssignmentSpecialtySelections] = useState<Record<string, string>>({});
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -256,9 +259,15 @@ export default function AdminPage() {
         }
         setIsAuthenticated(true);
         setAssignmentCases(result.data);
+        setCaseAssignmentSpecialtySelections(Object.fromEntries(result.data.map(({ id, specialtyId }) => [id, specialtyId ?? ""])));
         setCaseAssignmentSelections((current) => {
-          const availableByCase = new Map(result.data!.map(({ id, availableDoctors }) => [id, new Set(availableDoctors.map(({ id: doctorId }) => doctorId))]));
-          return Object.fromEntries(Object.entries(current).filter(([caseId, doctorId]) => availableByCase.get(caseId)?.has(doctorId)));
+          return Object.fromEntries(result.data!.map((caseRecord) => {
+            const compatibleDoctors = (caseRecord.verifiedDoctors ?? []).filter(({ specialtyIds }) => specialtyIds.includes(caseRecord.specialtyId ?? ""));
+            const selectedDoctor = compatibleDoctors.find(({ id }) => id === current[caseRecord.id])
+              ?? compatibleDoctors.find(({ id }) => id === caseRecord.doctorId)
+              ?? compatibleDoctors[0];
+            return [caseRecord.id, selectedDoctor?.id ?? ""];
+          }));
         });
         setAssignmentError("");
       } catch {
@@ -395,12 +404,26 @@ export default function AdminPage() {
     }
   }
 
+  function handleAssignmentSpecialtyChange(caseRecord: AssignmentCase, specialtyId: string) {
+    setCaseAssignmentSpecialtySelections((current) => ({ ...current, [caseRecord.id]: specialtyId }));
+    const compatibleDoctors = (caseRecord.verifiedDoctors ?? []).filter(({ specialtyIds }) => specialtyIds.includes(specialtyId));
+    setCaseAssignmentSelections((current) => {
+      const previousDoctorId = current[caseRecord.id] ?? caseRecord.doctorId ?? "";
+      const selectedDoctorId = compatibleDoctors.some(({ id }) => id === previousDoctorId)
+        ? previousDoctorId
+        : compatibleDoctors[0]?.id ?? "";
+      return { ...current, [caseRecord.id]: selectedDoctorId };
+    });
+  }
+
   async function handleAssignCase(caseRecord: AssignmentCase) {
-    const defaultDoctorId = caseRecord.availableDoctors.some(({ id }) => id === caseRecord.doctorId)
+    const specialtyId = caseAssignmentSpecialtySelections[caseRecord.id] ?? caseRecord.specialtyId ?? "";
+    const compatibleDoctors = (caseRecord.verifiedDoctors ?? []).filter(({ specialtyIds }) => specialtyIds.includes(specialtyId));
+    const defaultDoctorId = compatibleDoctors.some(({ id }) => id === caseRecord.doctorId)
       ? caseRecord.doctorId
-      : caseRecord.availableDoctors[0]?.id;
+      : compatibleDoctors[0]?.id;
     const doctorId = caseAssignmentSelections[caseRecord.id] ?? defaultDoctorId;
-    if (!doctorId || busyAssignmentCaseId) return;
+    if (!specialtyId || !doctorId || busyAssignmentCaseId || caseRecord.status !== "Submitted") return;
     setBusyAssignmentCaseId(caseRecord.id);
     setAssignmentError("");
     setAssignmentNotice("");
@@ -408,9 +431,9 @@ export default function AdminPage() {
       const response = await fetch(`/api/admin/cases/${encodeURIComponent(caseRecord.id)}/assignment`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ doctorId, expectedVersion: caseRecord.assignmentLockVersion }),
+        body: JSON.stringify({ doctorId, specialtyId, expectedVersion: caseRecord.assignmentLockVersion }),
       });
-      const result = await response.json() as ApiResult<{ doctorId: string; status: string }>;
+      const result = await response.json() as ApiResult<{ doctorId: string; specialtyId: string; status: string }>;
       if (response.status === 401 || response.status === 403) {
         setIsAuthenticated(false);
         return;
@@ -422,12 +445,9 @@ export default function AdminPage() {
           : result.error?.message ?? "Unable to assign this Case.");
         return;
       }
-      const targetName = caseRecord.availableDoctors.find(({ id }) => id === result.data!.doctorId)?.fullName ?? "the selected Doctor";
-      setAssignmentNotice(result.data.doctorId === caseRecord.doctorId && result.data.status === caseRecord.status
-        ? `No assignment change. Case ${caseRecord.id} remains assigned to ${targetName}.`
-        : result.data.status === "UnderReview" && caseRecord.status === "Submitted"
-          ? `Review started for Case ${caseRecord.id} with ${targetName}.`
-          : `Case ${caseRecord.id} assigned to ${targetName}.`);
+      const targetName = caseRecord.verifiedDoctors?.find(({ id }) => id === result.data!.doctorId)?.fullName ?? "the selected Doctor";
+      const specialtyName = specialties.find(({ id }) => id === result.data!.specialtyId)?.name ?? "the selected Specialty";
+      setAssignmentNotice(`Review started for Case ${caseRecord.id} with ${targetName} (${specialtyName}).`);
       setRefreshKey((value) => value + 1);
     } catch {
       setAssignmentNotice("Unable to confirm the assignment. Refreshing the active Case list.");
@@ -689,14 +709,15 @@ export default function AdminPage() {
           ) : (
             <div className="admin-case-list">
               {assignmentCases.map((caseRecord) => {
-                const defaultDoctorId = caseRecord.availableDoctors.some(({ id }) => id === caseRecord.doctorId)
+                const selectedSpecialtyId = caseAssignmentSpecialtySelections[caseRecord.id] ?? caseRecord.specialtyId ?? "";
+                const hasVerifiedDoctorDirectory = Array.isArray(caseRecord.verifiedDoctors);
+                const verifiedDoctors = caseRecord.verifiedDoctors ?? [];
+                const compatibleDoctors = verifiedDoctors.filter(({ specialtyIds }) => specialtyIds.includes(selectedSpecialtyId));
+                const defaultDoctorId = compatibleDoctors.some(({ id }) => id === caseRecord.doctorId)
                   ? caseRecord.doctorId
-                  : caseRecord.availableDoctors[0]?.id ?? "";
+                  : compatibleDoctors[0]?.id ?? "";
                 const selectedDoctorId = caseAssignmentSelections[caseRecord.id] ?? defaultDoctorId;
-                const currentDoctorSelected = selectedDoctorId !== "" && selectedDoctorId === caseRecord.doctorId;
-                const actionLabel = currentDoctorSelected
-                  ? caseRecord.status === "Submitted" ? "Confirm review" : "Keep current"
-                  : caseRecord.doctorId ? "Reassign" : "Assign";
+                const routingChanged = selectedSpecialtyId !== caseRecord.specialtyId || selectedDoctorId !== caseRecord.doctorId;
                 return (
                   <article className="admin-case-row" key={caseRecord.id}>
                     <div className="admin-case-description">
@@ -708,27 +729,50 @@ export default function AdminPage() {
                       <p><strong>Current Doctor:</strong> {caseRecord.assignedDoctorName ?? "Unassigned"}</p>
                       <span>Submitted {caseRecord.submittedAt ? new Date(caseRecord.submittedAt).toLocaleString() : "time unavailable"}</span>
                     </div>
-                    <div className="admin-case-classify-controls">
-                      <label className="sr-only" htmlFor={`case-doctor-${caseRecord.id}`}>Doctor for Case {caseRecord.id}</label>
-                      <select
-                        id={`case-doctor-${caseRecord.id}`}
-                        value={selectedDoctorId}
-                        onChange={(event) => setCaseAssignmentSelections((current) => ({ ...current, [caseRecord.id]: event.target.value }))}
-                        disabled={caseRecord.availableDoctors.length === 0 || busyAssignmentCaseId !== null}
-                      >
-                        {caseRecord.availableDoctors.length === 0
-                          ? <option value="">No verified Doctors in Specialty</option>
-                          : caseRecord.availableDoctors.map((doctor) => <option value={doctor.id} key={doctor.id}>{doctor.fullName}</option>)}
-                      </select>
-                      <button
-                        className="admin-decision admin-decision-approve"
-                        type="button"
-                        onClick={() => void handleAssignCase(caseRecord)}
-                        disabled={caseRecord.availableDoctors.length === 0 || busyAssignmentCaseId !== null}
-                      >
-                        {busyAssignmentCaseId === caseRecord.id ? "Saving..." : actionLabel}
-                      </button>
-                    </div>
+                    {caseRecord.status === "Submitted" ? (
+                      <div className="admin-routing-controls">
+                        <label htmlFor={`case-specialty-${caseRecord.id}`}>
+                          <span>Specialty</span>
+                          <select
+                            id={`case-specialty-${caseRecord.id}`}
+                            value={selectedSpecialtyId}
+                            onChange={(event) => handleAssignmentSpecialtyChange(caseRecord, event.target.value)}
+                            disabled={!hasVerifiedDoctorDirectory || isSpecialtiesLoading || specialties.length === 0 || busyAssignmentCaseId !== null}
+                          >
+                            {isSpecialtiesLoading
+                              ? <option value={selectedSpecialtyId}>Loading specialties...</option>
+                              : specialties.map((specialty) => <option value={specialty.id} key={specialty.id}>{specialty.name}</option>)}
+                          </select>
+                        </label>
+                        <label htmlFor={`case-doctor-${caseRecord.id}`}>
+                          <span>Doctor</span>
+                          <select
+                            id={`case-doctor-${caseRecord.id}`}
+                            value={selectedDoctorId}
+                            onChange={(event) => setCaseAssignmentSelections((current) => ({ ...current, [caseRecord.id]: event.target.value }))}
+                            disabled={!hasVerifiedDoctorDirectory || compatibleDoctors.length === 0 || busyAssignmentCaseId !== null}
+                          >
+                            {!hasVerifiedDoctorDirectory
+                              ? <option value="">Doctor options unavailable</option>
+                              : compatibleDoctors.length === 0
+                              ? <option value="">No verified Doctors for this Specialty</option>
+                              : compatibleDoctors.map((doctor) => <option value={doctor.id} key={doctor.id}>{doctor.fullName} — {doctor.specialties.join(" · ")}</option>)}
+                          </select>
+                        </label>
+                        <button
+                          className="admin-decision admin-decision-approve"
+                          type="button"
+                          onClick={() => void handleAssignCase(caseRecord)}
+                          disabled={!hasVerifiedDoctorDirectory || !selectedSpecialtyId || !selectedDoctorId || compatibleDoctors.length === 0 || busyAssignmentCaseId !== null}
+                        >
+                          {busyAssignmentCaseId === caseRecord.id ? "Saving..." : routingChanged ? "Save routing and start review" : "Confirm review"}
+                        </button>
+                        {!hasVerifiedDoctorDirectory && <p className="admin-routing-hint" role="alert">Doctor options are unavailable. Refresh assignments to reload the verified directory.</p>}
+                        <p className="admin-routing-hint">Confirming starts review and locks routing.</p>
+                      </div>
+                    ) : (
+                      <p className="admin-routing-locked">Doctor and Specialty locked after review begins.</p>
+                    )}
                   </article>
                 );
               })}

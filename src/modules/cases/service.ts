@@ -56,7 +56,7 @@ type CasesRepository = Pick<
 	typeof casesRepository,
 	| "createDraft" | "findByCreationRequestId" | "findLatestDraft" | "updateDraft" | "updateDraftDoctorSelection"
 	| "updateCaseToSubmitted" | "findById" | "listUnclassifiedSubmittedCases" | "listDoctorQueue"
-	| "listAdminAssignmentCases" | "assignCaseToDoctor" | "classifySubmittedCase" | "findDoctorVisibleCase"
+	| "listAdminAssignmentCases" | "assignCaseToDoctor" | "correctSubmittedCaseRouting" | "classifySubmittedCase" | "findDoctorVisibleCase"
 	| "listPatientCases" | "createDocumentRequest" | "createDocuments" | "createResponseDocuments" | "findDocumentById" | "deleteDocument"
 	| "submitOpinion" | "listClosedOpinionsForPayout" | "findOpinionByCaseId"
 	| "listSlaCandidates" | "markCaseRefundPending" | "listRefundPendingCases"
@@ -603,6 +603,15 @@ export function createCasesService(
 				}),
 			]));
 			const doctorNames = new Map(verifiedDoctors.map(({ id, fullName }) => [id, fullName]));
+			const verifiedDoctorOptions = verifiedDoctors.map(({ id, fullName, specialties: doctorSpecialties }) => ({
+				id,
+				fullName,
+				specialties: doctorSpecialties,
+				specialtyIds: doctorSpecialties.flatMap((name) => {
+					const specialtyId = specialtyIdsByName.get(name);
+					return specialtyId ? [specialtyId] : [];
+				}),
+			}));
 			return records.map((record) => ({
 				id: record.id,
 				affectedBodyArea: record.affectedBodyArea,
@@ -615,6 +624,7 @@ export function createCasesService(
 				availableDoctors: verifiedDoctors
 					.filter(({ id }) => record.specialtyId !== null && doctorSpecialties.get(id)?.includes(record.specialtyId))
 					.map(({ id, fullName }) => ({ id, fullName })),
+				verifiedDoctors: verifiedDoctorOptions,
 				submittedAt: record.submittedAt?.toISOString() ?? null,
 				assignmentLockVersion: record.assignmentLockVersion,
 			}));
@@ -632,6 +642,7 @@ export function createCasesService(
 			const record = await repository.findById(caseId);
 			if (!record) throw new CaseNotFoundError();
 			if (record.assignmentLockVersion !== expectedVersion) throw new CaseAssignmentVersionConflictError();
+			if (isAdmin && record.status !== "Submitted") throw new CaseAssignmentConflictError();
 			if (!record.specialtyId || !record.submittedAt
 				|| !["Submitted", "UnderReview", "MoreInfoRequested"].includes(record.status)) {
 				throw new CaseAssignmentConflictError();
@@ -694,6 +705,66 @@ export function createCasesService(
 				selectedDoctorId: record.selectedDoctorId,
 				status: nextStatus,
 				assignmentLockVersion: expectedVersion + (assignmentChanged ? 1 : 0),
+				submittedAt: record.submittedAt.toISOString(),
+			};
+		},
+
+		async correctSubmittedCaseRouting(
+			caller: AuthContext,
+			caseId: string,
+			specialtyId: string,
+			doctorId: string,
+			expectedVersion: number,
+		) {
+			assertAdmin(caller);
+			const normalizedSpecialtyId = specialtyId.trim();
+			const normalizedDoctorId = doctorId.trim();
+			if (!normalizedSpecialtyId) throw new InvalidCaseInputError("specialtyId must be a non-empty string.");
+			if (!normalizedDoctorId) throw new InvalidCaseInputError("doctorId must be a non-empty string.");
+			if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
+				throw new InvalidCaseInputError("expectedVersion must be a non-negative integer.");
+			}
+
+			const record = await repository.findById(caseId);
+			if (!record) throw new CaseNotFoundError();
+			if (record.status !== "Submitted" || !record.submittedAt) throw new CaseAssignmentConflictError();
+			if (record.assignmentLockVersion !== expectedVersion) throw new CaseAssignmentVersionConflictError();
+
+			const [specialties, doctorSpecialtyIds] = await Promise.all([
+				doctors.listActiveSpecialties(),
+				doctors.getVerifiedDoctorSpecialtyIds(normalizedDoctorId),
+			]);
+			if (!specialties.some(({ id }) => id === normalizedSpecialtyId)) {
+				throw new InvalidCaseInputError("Select an active Specialty.");
+			}
+			if (!doctorSpecialtyIds?.includes(normalizedSpecialtyId)) {
+				throw new CaseAssignmentDoctorUnavailableError();
+			}
+
+			const routingChanged = record.specialtyId !== normalizedSpecialtyId || record.doctorId !== normalizedDoctorId;
+			const corrected = await repository.correctSubmittedCaseRouting(
+				caseId,
+				normalizedSpecialtyId,
+				normalizedDoctorId,
+				expectedVersion,
+				record.specialtyId,
+				record.doctorId,
+				routingChanged,
+			);
+			if (!corrected) {
+				const current = await repository.findById(caseId);
+				if (!current) throw new CaseNotFoundError();
+				if (current.assignmentLockVersion !== expectedVersion) throw new CaseAssignmentVersionConflictError();
+				throw new CaseAssignmentConflictError();
+			}
+
+			return {
+				id: record.id,
+				specialtyId: normalizedSpecialtyId,
+				doctorId: normalizedDoctorId,
+				selectedDoctorId: record.selectedDoctorId,
+				status: "UnderReview" as const,
+				assignmentLockVersion: expectedVersion + (routingChanged ? 1 : 0),
 				submittedAt: record.submittedAt.toISOString(),
 			};
 		},

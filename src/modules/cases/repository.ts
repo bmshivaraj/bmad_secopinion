@@ -350,6 +350,34 @@ export const casesRepository = {
 		return updated.count === 1;
 	},
 
+	async correctSubmittedCaseRouting(
+		caseId: string,
+		specialtyId: string,
+		doctorId: string,
+		expectedVersion: number,
+		currentSpecialtyId: string | null,
+		currentDoctorId: string | null,
+		incrementVersion: boolean,
+	): Promise<boolean> {
+		const updated = await prisma.case.updateMany({
+			where: {
+				id: caseId,
+				status: "Submitted",
+				submittedAt: { not: null },
+				specialtyId: currentSpecialtyId,
+				doctorId: currentDoctorId,
+				assignmentLockVersion: expectedVersion,
+			},
+			data: {
+				specialtyId,
+				doctorId,
+				status: "UnderReview",
+				...(incrementVersion ? { assignmentLockVersion: { increment: 1 } } : {}),
+			},
+		});
+		return updated.count === 1;
+	},
+
 	async classifySubmittedCase(caseId: string, specialtyId: string, expectedVersion: number, clearDoctorAssignment: boolean): Promise<CaseRecord | null> {
 		const updated = await prisma.case.updateMany({
 			where: { id: caseId, status: "Submitted", specialtyId: null, assignmentLockVersion: expectedVersion },

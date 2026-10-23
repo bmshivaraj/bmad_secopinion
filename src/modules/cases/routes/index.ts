@@ -140,7 +140,7 @@ export async function parseCaseClassificationRequest(request: Request): Promise<
 	return { specialtyId: specialtyId.trim() };
 }
 
-export async function parseCaseAssignmentRequest(request: Request): Promise<{ doctorId?: string; expectedVersion: number }> {
+export async function parseCaseAssignmentRequest(request: Request): Promise<{ doctorId?: string; specialtyId?: string; expectedVersion: number }> {
 	let body: unknown;
 	try {
 		body = await request.json();
@@ -157,9 +157,16 @@ export async function parseCaseAssignmentRequest(request: Request): Promise<{ do
 	if (values.doctorId !== undefined && (typeof values.doctorId !== "string" || !values.doctorId.trim())) {
 		throw new InvalidCaseInputError("doctorId must be a non-empty string.");
 	}
+	if (values.specialtyId !== undefined && (typeof values.specialtyId !== "string" || !values.specialtyId.trim())) {
+		throw new InvalidCaseInputError("specialtyId must be a non-empty string.");
+	}
+	if (values.specialtyId !== undefined && values.doctorId === undefined) {
+		throw new InvalidCaseInputError("doctorId is required when correcting Case routing.");
+	}
 	return {
 		expectedVersion: values.expectedVersion as number,
 		...(typeof values.doctorId === "string" ? { doctorId: values.doctorId.trim() } : {}),
+		...(typeof values.specialtyId === "string" ? { specialtyId: values.specialtyId.trim() } : {}),
 	};
 }
 

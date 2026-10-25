@@ -10,9 +10,8 @@ export default function HomePage() {
   return (
     <main className="home-page">
       <header className="home-nav">
-        <Link className="home-brand" href="/" aria-label="SecOpinion home">
-          <span className="home-brand-mark" aria-hidden="true">S</span>
-          <span>SecOpinion</span>
+        <Link className="home-brand" href="/">
+          <img src="/secopinion-logo.png" alt="SecOpinion" />
         </Link>
         <nav className="home-nav-links" aria-label="Main navigation">
           <a className="home-nav-link" href="#why">Why a second opinion</a>
@@ -126,8 +125,7 @@ export default function HomePage() {
 
       <footer className="home-footer">
         <Link className="home-brand" href="/">
-          <span className="home-brand-mark" aria-hidden="true">S</span>
-          <span>SecOpinion</span>
+          <img src="/secopinion-logo.png" alt="SecOpinion" />
         </Link>
         <p>Independent perspective. Informed conversations.</p>
         <p className="home-footer-disclaimer">SecOpinion is not an emergency service and does not replace diagnosis or treatment from your healthcare provider.</p>

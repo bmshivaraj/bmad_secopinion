@@ -189,3 +189,24 @@
 - source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-role-portals.md`
   summary: Define and publish approved privacy and medical-record data-handling disclosures.
   evidence: The homepage introduces sharing medical records, but there is no existing privacy/disclosure page and the PRD leaves formal privacy, retention, and compliance policies undefined; legal/product-approved language is needed before adding claims.
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-logo-preview.md`
+  summary: Clarify whether the five-day standard-case response SLA uses calendar or business days and when it starts.
+  evidence: The public homepage states a five-day response SLA without defining day type or the SLA start event; this is pre-existing content outside the logo-preview scope.
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-logo-preview.md`
+  summary: Clarify the expected turnaround for expedited urgent-case review.
+  evidence: The public homepage describes expedited review but gives no timeframe; this is pre-existing content outside the logo-preview scope.
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-logo-preview.md`
+  summary: Make current case fees discoverable before users begin the sign-in flow.
+  evidence: The public homepage says fees are shown before payment but does not identify a pre-sign-in pricing route; this is pre-existing content outside the logo-preview scope.
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-logo-preview.md`
+  summary: Explain what credential checks support the homepage's verified-Doctor claim.
+  evidence: The public homepage uses the verified-Doctor claim without describing verification; this is pre-existing content outside the logo-preview scope.
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-logo-preview.md`
+  summary: Surface privacy information before patients share medical records.
+  evidence: The public homepage invites record sharing without linking privacy handling details; this is pre-existing content outside the logo-preview scope.
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-logo-preview.md`
+  summary: Clarify that a reviewing specialist may request more information or an examination.
+  evidence: The homepage caveat names the treating Doctor but not possible reviewer requests; this is pre-existing content outside the logo-preview scope.
+- source_spec: `_bmad-output/implementation-artifacts/spec-public-homepage-logo-preview.md`
+  summary: Explain how reviewer independence and conflicts of interest are handled.
+  evidence: The public homepage describes an independent review without explaining safeguards; this is pre-existing content outside the logo-preview scope.
